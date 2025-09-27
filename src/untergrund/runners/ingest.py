@@ -1,37 +1,63 @@
-from ..context import Ctx
+﻿from typing import Any
+
 import pandas as pd
-from typing import Any
+
+from ..context import Ctx
+from ..pipeline import CtxPipeline, bridge
+
 
 ### run ingest Pipeline
+
 def run_ingest(ctx: "Ctx") -> "Ctx":
-    print("+++INGEST+++") # Platzhalter für die Pipeline
-    return ctx
+    sensors_step = bridge(
+        lambda cfg: cfg["input_path"],
+        read_json,
+        build_sensor_dict,
+        name="config->sensors",
+    )
+
+    pipeline = (
+        CtxPipeline()
+        .add(sensors_step, source="config", dest="sensors")
+        .add(extract_metadata, source="sensors", dest="meta")
+        .add(drop_metadata_sensor, source="sensors")
+    )
+    return pipeline(ctx)
+
 
 ### JSON --> DF
-def read_json(data) -> pd.DataFrame:
-    ''' Liest eine JSON-Datei ein und gibt sie als DataFrame zurück.'''
+
+def read_json(path) -> pd.DataFrame:
+    ''' Liest eine JSON-Datei ein und gibt sie als DataFrame zurueck.'''
     try:
-        df = pd.read_json(f"data/{data}")
-    except:
-        raise RuntimeError(f"JSON kann nicht eingelesen werden (data/{data})")
+        df = pd.read_json(path)
+    except Exception:
+        raise RuntimeError(f"JSON kann nicht eingelesen werden ({path})")
     if "sensor" not in df.columns:
         print("keine Sensoren im DF")
     return df
 
+
 ### DF --> Dict[Sensor, DF]
-def build_sensor_dict(df:pd.DataFrame) -> dict[str,pd.DataFrame]:
+
+def build_sensor_dict(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     '''Dict mit key=Sensor, Value=DF(Values des Sensors)
-        -> Alle NAN-Spalten löschen
-        -> Index zurücksetzen
-        (Metadaten werden als "Sensor" geführt)
+        -> Alle NAN-Spalten loeschen
+        -> Index zuruecksetzen
+        (Metadaten werden als "Sensor" gefuehrt)
     '''
-    return {str(sensor): grouped_dfs.dropna(axis=1, how="all").reset_index(drop=True) for sensor, grouped_dfs in df.groupby("sensor")}
+    return {
+        str(sensor): grouped_dfs.dropna(axis=1, how="all").reset_index(drop=True)
+        for sensor, grouped_dfs in df.groupby("sensor")
+    }
+
 
 ### Dict[Sensor["Metadata"], DF] --> Dict[Meta]
+
 def extract_metadata(sensor_dfs: dict[str, pd.DataFrame]) -> dict[str, Any]:
     '''Extrahiert die Metadaten aus dem Sensor-DF-Dict.
-       Gibt ein Dict mit den Metadaten zurück.
-       Wenn keine Metadaten vorhanden sind, wird ein leeres Dict zurückgegeben.
+       Gibt ein Dict mit den Metadaten zurueck.
+       Wenn keine Metadaten vorhanden sind, wird ein leeres Dict zurueckgegeben.
     '''
     meta = {}
     if "Metadata" in sensor_dfs:
@@ -41,33 +67,8 @@ def extract_metadata(sensor_dfs: dict[str, pd.DataFrame]) -> dict[str, Any]:
     return meta
 
 
-# --- Ingest via CtxPipeline (KISS) ---
-from ..pipeline import CtxPipeline
-
-
-def read_json(path: str) -> pd.DataFrame:
-    """Liest eine JSON-Datei ein und gibt sie als DataFrame zurück."""
-    df = pd.read_json(path)
-    if "sensor" not in df.columns:
-        raise RuntimeError("Ingest: Spalte 'sensor' fehlt im JSON-DataFrame.")
-    return df
-
-
-def ingest_sensors(cfg: dict[str, Any]) -> dict[str, pd.DataFrame]:
-    path = cfg["input_path"]
-    df = read_json(path)
-    return build_sensor_dict(df)
-
-
-def derive_meta_from_sensors(sensors: dict[str, pd.DataFrame]) -> dict[str, Any]:
-    return extract_metadata(sensors)
-
-
-def run_ingest(ctx: "Ctx") -> "Ctx":
-    pipe = (
-        CtxPipeline()
-        .add(ingest_sensors, source="config", dest="sensors", name="ingest_sensors")
-        .add(derive_meta_from_sensors, source="sensors", dest="meta", name="extract_metadata")
-    )
-    return pipe(ctx)
-
+def drop_metadata_sensor(sensors: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    '''Entfernt den Sensor "Metadata" aus dem Sensors-Dict (falls vorhanden).'''
+    if "Metadata" in sensors:
+        return {k: v for k, v in sensors.items() if k != "Metadata"}
+    return sensors
