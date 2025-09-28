@@ -139,28 +139,41 @@ class CtxPipeline:
 
     def tap(
         self,
-        inspector: Callable[[Any], object],
+        inspector: Callable[[Any], None],
         *,
-        deepcopy: bool = True,
+        source: str | Sequence[str],
         name: Optional[str] = None,
+        deepcopy: bool = True,
     ) -> "CtxPipeline":
         """
-        Read-only Inspektion. Schreibt NICHT in den Ctx.
-        - deepcopy=True schützt vor versehentlicher Mutation im Inspector.
+        Inspektions-Step (read-only):
+        - source: Pflicht. Einzelne 'Schublade' (str) oder mehrere (Sequence[str]).
+        - inspector: Funktion, die die extrahierten Daten betrachtet/verarbeitet
+                     (z. B. Log/Datei schreibt) und `None` zurückgibt.
+        - deepcopy: True (Standard) => schützt sicher vor versehentlichen Mutationen.
+        - name: optionaler Anzeigename (nur für __repr__/Debug).
+        
+        Gibt den unveränderten Ctx weiter.
         """
-        nm = name or getattr(inspector, "__name__", "tap")
-        buf = self.taps.setdefault(nm, [])
+        step_name = name or getattr(inspector, "__name__", "tap")
+
+        def _project(ctx: Any) -> Any:
+            if isinstance(source, str):
+                data = getattr(ctx, source)
+                return copy.deepcopy(data) if deepcopy else data
+            # mehrere Quellen -> gleiches Tupel, in Reihenfolge der Namen
+            items = tuple(getattr(ctx, s) for s in source)
+            return copy.deepcopy(items) if deepcopy else items
 
         def _tap(ctx: Any) -> Any:
-            x = copy.deepcopy(ctx) if deepcopy else ctx
-            out = inspector(x)
-            if out is not None:
-                buf.append(out)
-            return ctx
+            view = _project(ctx)
+            inspector(view)   # Inspektor hat keine Rückgabe (None erwartet)
+            return ctx        # Ctx bleibt unverändert
 
-        _tap.__name__ = f"tap({nm})"
+        _tap.__name__ = f"tap({step_name})"
         self.steps.append(_tap)
         return self
+
 
     # ---------- Internals ----------
 

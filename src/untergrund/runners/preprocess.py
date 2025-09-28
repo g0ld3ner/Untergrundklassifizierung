@@ -1,11 +1,15 @@
+from ..pipeline import CtxPipeline
+from ..shared.inspect import show_sensor_details
 from ..shared.sensors import apply_to_all_sensors
 from ..context import Ctx
 import pandas as pd
 
 ### run preprocess Pipeline
 def run_preprocess(ctx: "Ctx") -> "Ctx":
-    print("+++PREPROCESS+++") # Platzhalter für die Pipeline
-    return ctx
+    pipeline = CtxPipeline()
+    pipeline.add(time_to_index, source="sensors", dest="sensors")
+    pipeline.tap(show_sensor_details, source="sensors")
+    return pipeline(ctx)
 
 
 @apply_to_all_sensors

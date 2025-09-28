@@ -1,5 +1,5 @@
 {
-  "input_path": "data/testdaten.json",
+  "input_path": "data/Mozartstr.json",
   "sensor_list": ["Accelerometer","Gyroscope","GameOrientation","Location"],
   "test_key": "test_value"
 }
