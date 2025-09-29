@@ -1,9 +1,9 @@
-from typing import Callable, Iterable, Protocol, cast
+from typing import Callable, Iterable, Protocol, cast, Any
 from inspect import signature
 from functools import wraps 
 import re
 
-####### decorator mit selectionsfunktion
+####### decorator für Transformationen auf Sensor-Dicts
 type SensorDict[T] = dict[str, T]
 type SensorName = str | None
 
@@ -87,3 +87,76 @@ def apply_to_all_sensors[T](func: Callable[..., T]) -> SensorStep[T]:
 
     wrapper.select = select  # type: ignore[attr-defined]
     return cast(SensorStep[T], wrapper)
+
+
+####### decorator für Inspektionsfunktionen auf Sensor-Dicts (geben immer None zurück)
+class SensorInspector[T](Protocol):
+    """Callable mit Broadcast-Unterstützung plus .select(...), Rückgabe immer None."""
+    def __call__(self, x: T | SensorDict[T]) -> None: ...
+    def select(
+        self,
+        *,
+        include: Iterable[str] | None = None,
+        exclude: Iterable[str] | None = None,
+        regex: str | None = None,
+        predicate: Callable[[str, T], bool] | None = None,
+    ) -> "SensorInspector[T]": ...
+
+def inspect_all_sensors(func: Callable[..., Any]) -> SensorInspector[Any]:
+    """
+    Decorator: Macht aus einer Funktion f(x) eine, die auch dict[str, x] akzeptiert,
+    optional 'sensor_name' (kw-only) injiziert – und IMMER None zurückgibt.
+    Bietet .select(...), analog zu apply_to_all_sensors.
+    """
+    accepts_name = "sensor_name" in signature(func).parameters
+
+    def _apply(name: SensorName, value: Any) -> None:
+        if accepts_name:
+            func(value, sensor_name=name)
+        else:
+            func(value)
+        return None
+
+    @wraps(func)
+    def wrapper(x: Any) -> None:
+        if isinstance(x, dict):
+            for name, value in x.items():
+                _apply(name, value)
+            return None
+        else:
+            _apply(None, x)
+            return None
+
+    def select(
+        *,
+        include: Iterable[str] | None = None,
+        exclude: Iterable[str] | None = None,
+        regex: str | None = None,
+        predicate: Callable[[str, Any], bool] | None = None,
+    ) -> "SensorInspector[Any]":
+        pattern = re.compile(regex) if regex else None
+
+        def is_selected(name: str, val: Any) -> bool:
+            if include is not None and name not in include: return False
+            if exclude is not None and name in exclude: return False
+            if pattern is not None and not pattern.search(name): return False
+            if predicate is not None and not predicate(name, val): return False
+            return True
+
+        @wraps(func)
+        def selective_wrapper(x: Any) -> None:
+            if isinstance(x, dict):
+                for name, value in x.items():
+                    if is_selected(name, value):
+                        _apply(name, value)
+                return None
+            else:
+                # Bei Einzelobjekten macht Selektion semantisch nichts – wir inspizieren trotzdem.
+                _apply(None, x)
+                return None
+
+        selective_wrapper.select = select  # type: ignore[attr-defined]
+        return cast(SensorInspector[Any], selective_wrapper)
+
+    wrapper.select = select  # type: ignore[attr-defined]
+    return cast(SensorInspector[Any], wrapper)

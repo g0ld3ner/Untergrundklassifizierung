@@ -21,3 +21,4 @@ def time_to_index(df: pd.DataFrame) -> pd.DataFrame:
     df_timeindex.drop(columns="time", inplace=True)
     # später auf richtige reihenfolge der Zeitstempel, Duplikate und Lücken prüfen --> eigene Funktion?
     return df_timeindex
+
