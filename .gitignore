@@ -6,5 +6,6 @@ __pycache__/
 data/
 local/
 *.code-workspace
-
+*.egg-info/
+.pytest_cache/
 TESTS_CtxPipeline_Routing.md
