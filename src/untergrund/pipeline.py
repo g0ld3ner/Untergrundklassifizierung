@@ -1,66 +1,8 @@
 from dataclasses import is_dataclass, replace, fields as dc_fields
-from typing import Callable, Iterable, Optional, Any, Sequence, TypeVar, cast
+from typing import Callable, Optional, Any, Sequence
 import copy
 
 from .context import Ctx
-
-
-class Pipeline[T]:
-    """
-    Mini-Pipeline für Sensor-Daten.
-    - Führe mehrere Funktionen nacheinander aus
-    - Callable: pipe(data) als Aufruf (wie eine Funktion)
-    - Repräsentation zeigt die Steps: Pipeline: step1 → step2 → step3
-    """
-
-    def __init__(self, steps: Iterable[Callable[[T], T]] | None = None):
-        self.steps: list[Callable[[T], T]] = []
-        self.taps: dict[str, list[object]] = {}  # Rückgaben von Tap-Funktionen (optional)
-        # Konstruktor einheitlich über add:
-        if steps:
-            for f in steps:
-                self.add(f)
-
-    def __call__(self, x: T) -> T:
-        """Wendet alle Steps nacheinander auf x an und gibt das Endergebnis zurück."""
-        for f in self.steps:
-            x = f(x)
-            if x is None: #Fehler werfen falls eine Funktion der Pipeline keinen return hat.
-                raise RuntimeError(f"Step {getattr(f, '__name__', repr(f))} hat nichts zurückgegeben!")
-        return x
-
-    def __repr__(self) -> str:
-        if not self.steps:
-            return "Pipeline: (empty)"
-        names = [getattr(f, "__name__", repr(f)) for f in self.steps]
-        numbered = [f"{i:02} → {name}" for i, name in enumerate(names, start=1)]
-        return "Pipeline:\n  " + "\n  ".join(numbered)
-
-    def add(self, f: Callable[[T], T]) -> "Pipeline":
-        """Hängt einen Step hinten an (Chaining möglich)."""
-        self.steps.append(f)
-        return self
-
-    def tap(self, fn: Callable[[T], object]) -> "Pipeline":
-        """Hängt eine "Inspektionsfunktion" an.
-        - führt fn(x) aus (Side-Effect)
-        - gibt x unverändert weiter!!!
-        - speichert fn-Return (falls != None) in self.taps[fn.__name__]
-        tap ruft intern add auf!
-        """
-        name = getattr(fn, "__name__", "lambda")
-
-        def wrapper(x: T) -> T:
-            x_copy = copy.deepcopy(x)      # Safety first – keine Mutation am Original
-            result = fn(x_copy)            
-            if result is not None:
-                self.taps.setdefault(name, []).append(result)
-            return x # Original geht zurück in die Pipeline
-
-        wrapper.__name__ = f"tap({name})"
-        return self.add(wrapper) 
-    
-
 
 
 # ---------- CtxPipeline: Ctx→Ctx Pipeline für dataclasses ----------
@@ -156,6 +98,10 @@ class CtxPipeline:
         Gibt den unveränderten Ctx weiter.
         """
         step_name = name or getattr(inspector, "__name__", "tap")
+        
+        # Deepcopy Warnung
+        if not deepcopy:
+            print(f"WARNUNG: tap({step_name}, deepcopy=False) – Mutationen am Ctx sind möglich!")
 
         def _project(ctx: Any) -> Any:
             if isinstance(source, str):
@@ -167,7 +113,9 @@ class CtxPipeline:
 
         def _tap(ctx: Any) -> Any:
             view = _project(ctx)
-            inspector(view)   # Inspektor hat keine Rückgabe (None erwartet)
+            result = inspector(view)   # Inspektor hat keine Rückgabe (None erwartet)
+            if result is not None:
+                print(f"Warnung: Tap-Inspektor {step_name} hat etwas zurückgegeben! Return wird aber ignoriert ;)")
             return ctx        # Ctx bleibt unverändert
 
         _tap.__name__ = f"tap({step_name})"

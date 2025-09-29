@@ -20,7 +20,7 @@ class SensorStep[T](Protocol):
     ) -> "SensorStep[T]": ...
 
 
-def apply_to_all_sensors[T](func: Callable[..., T]) -> SensorStep[T]:
+def transform_all_sensors[T](func: Callable[..., T]) -> SensorStep[T]:
     """
     Decorator: Macht aus einer Input->Output Funktion eine,
     die auch dict[str, Input] -> dict[str, Output] versteht.

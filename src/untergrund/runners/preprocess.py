@@ -1,6 +1,6 @@
 from ..pipeline import CtxPipeline
 from ..shared.inspect import show_sensor_details
-from ..shared.sensors import apply_to_all_sensors
+from ..shared.sensors import transform_all_sensors
 from ..context import Ctx
 import pandas as pd
 
@@ -12,7 +12,7 @@ def run_preprocess(ctx: "Ctx") -> "Ctx":
     return pipeline(ctx)
 
 
-@apply_to_all_sensors
+@transform_all_sensors
 ### Zeitstempel -> Zeitindex
 def time_to_index(df: pd.DataFrame) -> pd.DataFrame:
     df_timeindex = df.copy()

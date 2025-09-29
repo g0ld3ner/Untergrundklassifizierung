@@ -17,6 +17,7 @@ def main() -> Ctx:
 
 if __name__ == "__main__":
     test = main()
+    print("\n--- Test run complete ---\n")
     print(type(test.sensors))
     print(test.sensors.keys())
     print(test.sensors["Accelerometer"].head())
