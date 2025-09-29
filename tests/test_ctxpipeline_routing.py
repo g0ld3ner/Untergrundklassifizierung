@@ -152,7 +152,7 @@ def test_ctx_pipeline_tap_immutability():
     final_ctx = pipe(ctx)
 
     ### Assertions to verify immutability
-    # Check that final_ctx IS the new Ctx object (immutability)
+    # Check that final_ctx IS the Ctx object (immutability)
     assert isinstance(final_ctx, Ctx)
     assert final_ctx is ctx
     # Check that the sensors reference is the same (no changes)
