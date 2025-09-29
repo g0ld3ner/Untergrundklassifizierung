@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "untergrund"
+version = "0.1.0"
+description = "Untergrundklassifizierung – Sensor-Pipeline"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Maik" }]
+
+[tool.setuptools.packages.find]
+where = ["src"]
