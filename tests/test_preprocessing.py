@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import pytest
 
-from untergrund.runners.preprocess import time_to_index, handle_nat_in_index, sort_sensors_by_time_index, group_duplicate_timeindex
+from untergrund.runners.preprocess import time_to_index, handle_nat_in_index, sort_sensors_by_time_index, group_duplicate_timeindex, validate_basic_preprocessing
 
 
 #---KI generierte Tests zu time_to_index---#
@@ -104,7 +104,7 @@ def test_empty_df_returns_unchanged():
     assert len(out) == 0
 
 
-def test_non_datetime_index_raises():
+def test_not_datetime_index_raises():
     df = pd.DataFrame({"v": [1, 2, 3]})  # RangeIndex
     with pytest.raises(ValueError):
         sort_sensors_by_time_index.core(df)
@@ -178,4 +178,98 @@ def test_group_rowcount_matches_expected():
     out = group_duplicate_timeindex.core(df)
     assert out.shape[0] == 2
     assert out.index.is_unique
+#--- ---#
+
+#---KI generierte Tests zu validate_basic_preprocessing---#
+def test_valid_passes_and_prints_info(capsys):
+    idx = pd.date_range("2025-01-01", periods=5, freq="s", tz="UTC").set_names(["time_utc"])
+    df = pd.DataFrame({"x": np.arange(5, dtype=float)}, index=idx)
+    out = validate_basic_preprocessing.core(df, sensor_name="acc")
+    assert out is df
+    assert "passed all basic preprocessing validations" in capsys.readouterr().out
+
+
+def test_index_name_none_is_set_and_informs(capsys):
+    idx = pd.date_range("2025-01-01", periods=3, freq="s", tz="UTC").set_names([None])
+    df = pd.DataFrame({"x": np.arange(3, dtype=float)}, index=idx)
+    validate_basic_preprocessing.core(df, sensor_name="gyro")
+    assert df.index.name == "time_utc"
+    assert "Set index name to 'time_utc'" in capsys.readouterr().out
+
+
+def test_few_rows_info(capsys):
+    idx = pd.date_range("2025-01-01", periods=3, freq="s", tz="UTC").set_names(["time_utc"])
+    df = pd.DataFrame({"x": np.arange(3, dtype=float)}, index=idx)
+    validate_basic_preprocessing.core(df, sensor_name="acc")
+    assert "has only 3 rows, very little data" in capsys.readouterr().out
+
+
+def test_empty_df_warning(capsys):
+    idx = pd.DatetimeIndex([], tz="UTC", name="time_utc")
+    df = pd.DataFrame(index=idx)
+    validate_basic_preprocessing.core(df, sensor_name="acc")
+    assert "is empty" in capsys.readouterr().out
+
+
+def test_no_columns_warning(capsys):
+    idx = pd.date_range("2025-01-01", periods=5, freq="s", tz="UTC").set_names(["time_utc"])
+    df = pd.DataFrame(index=idx)  # keine Spalten
+    validate_basic_preprocessing.core(df, sensor_name="acc")
+    assert "has no columns" in capsys.readouterr().out
+
+
+def test_non_datetime_index_raises():
+    df = pd.DataFrame({"x": [1, 2, 3]})  # RangeIndex
+    with pytest.raises(ValueError) as e:
+        validate_basic_preprocessing.core(df, sensor_name="acc")
+    assert "must be a DatetimeIndex" in str(e.value)
+
+
+def test_naive_timezone_raises():
+    idx = pd.date_range("2025-01-01", periods=3, freq="s")  # tz=None
+    df = pd.DataFrame({"x": [1, 2, 3]}, index=idx)
+    with pytest.raises(ValueError) as e:
+        validate_basic_preprocessing.core(df, sensor_name="acc")
+    assert "timezone-aware" in str(e.value)
+
+
+def test_wrong_timezone_raises():
+    idx = pd.date_range("2025-01-01", periods=3, freq="s", tz="Europe/Berlin")
+    df = pd.DataFrame({"x": [1, 2, 3]}, index=idx)
+    with pytest.raises(ValueError) as e:
+        validate_basic_preprocessing.core(df, sensor_name="acc")
+    assert "UTC timezone" in str(e.value)
+
+
+def test_not_monotonically_increasing_raises():
+    idx = pd.DatetimeIndex(
+        ["2025-01-01 00:00:02+00:00", "2025-01-01 00:00:01+00:00", "2025-01-01 00:00:00+00:00"],
+        tz="UTC",
+        name="time_utc",
+    )
+    df = pd.DataFrame({"x": [1, 2, 3]}, index=idx)
+    with pytest.raises(ValueError) as e:
+        validate_basic_preprocessing.core(df, sensor_name="acc")
+    assert "not monotonically increasing" in str(e.value)
+
+
+def test_duplicates_in_index_raises():
+    base = pd.date_range("2025-01-01 00:00:00", periods=3, freq="s", tz="UTC")
+    idx = pd.DatetimeIndex([base[0], base[1], base[1]], name="time_utc")  # t1 doppelt
+    df = pd.DataFrame({"x": [1, 2, 3]}, index=idx)
+    with pytest.raises(ValueError) as e:
+        validate_basic_preprocessing.core(df, sensor_name="acc")
+    assert "duplicate time entries" in str(e.value)
+
+
+def test_nat_in_index_raises():
+    idx = pd.DatetimeIndex(
+        ["2025-01-01 00:00:00+00:00", "NaT", "2025-01-01 00:00:02+00:00"],
+        tz="UTC",
+        name="time_utc",
+    )
+    df = pd.DataFrame({"x": [1, 2, 3]}, index=idx)
+    with pytest.raises(ValueError) as e:
+        validate_basic_preprocessing.core(df, sensor_name="acc")
+    assert "NaT" in str(e.value)
 #--- ---#

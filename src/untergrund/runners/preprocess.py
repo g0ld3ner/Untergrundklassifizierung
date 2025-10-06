@@ -15,22 +15,29 @@ def run_preprocess(ctx: "Ctx") -> "Ctx":
 
 ### Zeitstempel -> Zeitindex
 @transform_all_sensors
-def time_to_index(df: pd.DataFrame) -> pd.DataFrame:
+def time_to_index(df: pd.DataFrame, time_col:str="time") -> pd.DataFrame:
     """
     Wandelt 'time' Spalte (ns seit 1970-01-01 UTC) in DatetimeIndex um.
-    - Erwartet Spalte 'time' in Nanosekunden.
-    - Setzt Indexname auf 'time_utc' und Zeitzone auf UTC.
+    - Erwartet Spalte time_col:str="time" in Nanosekunden.
+    - Setzt Indexname auf 'time_utc' und Zeitzone auf UTC (tz-aware).
     """
     if df.empty:
         print("[Warning] DataFrame is empty, nothing to index.")
         return df
-    df_timeindex = df.copy()
-    if "time" not in df_timeindex.columns:
-        raise ValueError("DataFrame must contain a 'time' column to convert to index.")
-    df_timeindex.set_index(pd.to_datetime(df_timeindex["time"], unit="ns", utc=True, errors="coerce"), inplace=True)
-    df_timeindex.index.name = "time_utc"
-    df_timeindex.drop(columns="time", inplace=True)
-    return df_timeindex
+    if time_col not in df.columns:
+        raise ValueError(f"DataFrame must contain a '{time_col}' column to convert to index.")
+    
+    df_time_index = df.copy()
+    df_time_index.set_index(pd.to_datetime(df_time_index[time_col], unit="ns", utc=True, errors="coerce"), inplace=True)
+    df_time_index.index.name = "time_utc"
+    df_time_index.drop(columns=time_col, inplace=True)
+
+    time_nans = df[time_col].isna().sum()
+    time_nats = df_time_index.index.isna().sum()
+    if time_nans != time_nats:
+        print(f"[Warning] {time_nans} NaN values in '{time_col}' column, but {time_nats} NaT values in index.")
+
+    return df_time_index
 
 ### NaT Handling
 @transform_all_sensors
@@ -171,3 +178,57 @@ def group_duplicate_timeindex(df: pd.DataFrame) -> pd.DataFrame:
     else:
         print("[Info] No duplicate timestamps found, no grouping needed.")
         return df
+    
+### Validierung der Basisfunktionen des Preprocessings
+@transform_all_sensors
+def validate_basic_preprocessing(df: pd.DataFrame, *, sensor_name: str) -> pd.DataFrame:
+    """
+    Führt eine Reihe von Validierungen auf dem DataFrame durch:
+    - Prüft, ob der Index ein DatetimeIndex ist.
+    - Prüft, ob der Index monoton aufsteigend ist.
+    - Prüft, ob der Index Duplikate enthält.
+    - Prüft, ob der Index NaT-Werte enthält.
+    - Prüft, ob der Index eine Zeitzone hat und ob diese UTC ist.
+    - Gibt Warnungen aus, wenn der DataFrame leer ist, sehr wenig Daten hat, oder keine Spalten hat.
+    - Setzt den Indexnamen auf 'time_utc', wenn er einen anderen Namen hat. + Info    
+    Gibt den unveränderten DataFrame zurück, wenn alle Prüfungen bestanden sind.
+    """
+    # harte Fehler
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError(f"DataFrame '{sensor_name}' index must be a DatetimeIndex")
+
+    if df.index.tz is None:
+        raise ValueError(f"DataFrame '{sensor_name}' index must be timezone-aware")
+
+    if str(df.index.tz) != "UTC":
+        raise ValueError(f"DataFrame '{sensor_name}' index must be in UTC timezone")
+    
+    if df.index.hasnans:
+        nat_count = df.index.isna().sum()
+        raise ValueError(f"DataFrame '{sensor_name}' index contains {nat_count} NaT values")
+
+    if not df.index.is_monotonic_increasing:
+        raise ValueError(f"DataFrame '{sensor_name}' index is not monotonically increasing")
+
+    if df.index.has_duplicates:
+        dup_count = df.index.duplicated().sum()
+        raise ValueError(f"DataFrame '{sensor_name}' index has {dup_count} duplicate time entries")
+
+    # Index Namen setzen
+    if df.index.name != "time_utc":
+        old_name = df.index.name
+        df.index.name = "time_utc"
+        print(f"[Info] Index name was {old_name} until now! -> Set index name to 'time_utc'")
+
+    # Warnungen
+    if df.empty:
+        print(f"[Warning] Sensor '{sensor_name}' is empty.")
+    if df.shape[0] < 10:
+        print(f"[Info] Sensor '{sensor_name}' has only {df.shape[0]} rows, very little data.")
+    if df.shape[1] == 0:
+        print(f"[Warning] Sensor '{sensor_name}' has no columns.")
+
+
+
+    print(f"[Info] DataFrame '{sensor_name}' passed all basic preprocessing validations.")
+    return df   
