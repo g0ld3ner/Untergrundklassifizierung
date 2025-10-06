@@ -16,13 +16,63 @@ def run_preprocess(ctx: "Ctx") -> "Ctx":
 ### Zeitstempel -> Zeitindex
 @transform_all_sensors
 def time_to_index(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Wandelt 'time' Spalte (ns seit 1970-01-01 UTC) in DatetimeIndex um.
+    - Erwartet Spalte 'time' in Nanosekunden.
+    - Setzt Indexname auf 'time_utc' und Zeitzone auf UTC.
+    """
+    if df.empty:
+        print("[Warning] DataFrame is empty, nothing to index.")
+        return df
     df_timeindex = df.copy()
     if "time" not in df_timeindex.columns:
         raise ValueError("DataFrame must contain a 'time' column to convert to index.")
-    df_timeindex.set_index(pd.to_datetime(df_timeindex["time"], unit="ns", utc=True),inplace=True)
+    df_timeindex.set_index(pd.to_datetime(df_timeindex["time"], unit="ns", utc=True, errors="coerce"), inplace=True)
     df_timeindex.index.name = "time_utc"
     df_timeindex.drop(columns="time", inplace=True)
     return df_timeindex
+
+### NaT Handling
+@transform_all_sensors
+def handle_nat_in_index(df: pd.DataFrame, gap_len:int = 3) -> pd.DataFrame:
+    """
+    Zählt NaT im Index, erkennt zusammenhängende NaT-Cluster (in Samples) und dropt NaT-Zeilen.
+    Warnung, wenn ein Cluster >= gap_len Samples umfasst.
+    """
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError("DataFrame index must be a DatetimeIndex")
+    
+    if not df.index.hasnans:
+        print("[Info] No NaT values found in index. Returning original DataFrame.")
+        return df
+        
+    nat_series = pd.Series(df.index.isna(), index=df.index) #Pandas Series statt numpy Array, damit groupby funktioniert
+    nat_count = int(nat_series.sum())
+    print(f"[Warning] DataFrame index contains {nat_count} NaT values. Initial shape: {df.shape}")
+
+    
+    
+    # Zusammenhängende NaT-Cluster erkennen
+    switch_points = (nat_series != nat_series.shift()) # Wert mit vorherigem Wert (shift()) vergleichen -> wechselpunkte zwischen True/False
+    group_id = switch_points.cumsum() # kumulative Summe der Wechselpunkte -> Gruppen-ID
+    group_sizes = nat_series.groupby(group_id).sum() # größe der true-Gruppen zählen (False-Gruppen sind 0)  
+    if gap_len < 1:
+        raise ValueError("gap_len must be >= 1")
+    gap_count = int((group_sizes >= gap_len).sum()) 
+    
+    # Warnung bei langem NaT-Cluster
+    if gap_count > 0:
+        longest_gap = int(group_sizes.max())
+        print(f"[Warning] Found {gap_count} NaT blocks with length >= {gap_len}! longest={longest_gap}.")
+        
+    # Entfernen der NaT-Zeilen
+    df_cleaned = df[~nat_series]
+    print(f"[Info] Removed {nat_count} NaT rows, resulting shape: {df_cleaned.shape}")
+    if df_cleaned.shape[0] != df.shape[0] - nat_count:
+        print(f"[Warning] After removing NaT rows, expected {df.shape[0] - nat_count} rows but got {df_cleaned.shape[0]} rows.")
+    return df_cleaned
+    
+        
 
 
 ### Sortieren der Sensoren nach Zeitstempel
@@ -58,3 +108,66 @@ def sort_sensors_by_time_index(df: pd.DataFrame) -> pd.DataFrame:
     print("[Info] DataFrame sorted by time index.")
 
     return df_sorted
+
+### Gruppieren von doppelten Zeitstempeln
+@transform_all_sensors
+def group_duplicate_timeindex(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Gruppiert Zeilen mit gleichen Zeitstempeln.
+    zählt alle auftretenden Gruppen.
+        - Numerische Spalten: Median
+        - Nicht-numerische Spalten (inklusive bool): Erster Wert
+        - NaT-Zeilen werden dedupliziert. 
+    Gibt einen DataFrame mit eindeutigen Zeitstempeln zurück.
+    """
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError("DataFrame index must be a DatetimeIndex")
+    
+    if df.index.has_duplicates:
+        rows_in = df.shape[0]
+        dup_timestamps = df.index.duplicated(keep="first")
+        print(f"[Info] {dup_timestamps.sum()} duplicate timestamps found")
+        rows_out = rows_in - dup_timestamps.sum()
+        print(f"[Info] estimated: reducing rows from {rows_in} to {rows_out}")
+
+        # Anzahl Gruppen
+        count_groups = df.index[dup_timestamps].nunique()
+        print(f"[Info] {count_groups} unique duplicate timestamp groups found")
+
+        # Gruppen bilden getrennt nach numerischen und nicht-numerischen Spalten
+        df_numeric = pd.DataFrame(index=df.index)
+        df_not_numeric = pd.DataFrame(index=df.index)
+        df_grouped = pd.DataFrame(index=df.index.unique()) # neuer DF mit eindeutigen Zeitstempeln in alter Reihenfolge
+        num_cols = df.select_dtypes(include='number').columns
+        non_num_cols = df.select_dtypes(exclude='number').columns
+        if not num_cols.empty:
+            df_numeric = df[num_cols]
+            df_numeric_grouped = df_numeric.groupby(df.index,dropna=False).median()
+        else:
+            df_numeric_grouped = pd.DataFrame(index=df.index.unique())
+        if not non_num_cols.empty:
+            df_not_numeric = df[non_num_cols]
+            df_not_numeric_grouped = df_not_numeric.groupby(df.index,dropna=False).first()
+        else:
+            df_not_numeric_grouped = pd.DataFrame(index=df.index.unique())
+        
+        # konkatinieren der gruppierten DataFrames
+        df_grouped = pd.concat([df_numeric_grouped, df_not_numeric_grouped], axis=1)
+        df_grouped = df_grouped[df.columns]  # Spaltenreihenfolge beibehalten
+        df_grouped.index.name = df.index.name  # Indexname beibehalten
+
+        # kurze Validierung
+        if not df_grouped.index.is_monotonic_increasing:
+            print("[Warning] Grouped DataFrame index is not sorted!")
+        rows_removed = rows_in - df_grouped.shape[0]
+        if not rows_removed == dup_timestamps.sum():
+            print(f"[Warning] Grouped DataFrame removed {rows_removed} rows, but expected to remove {dup_timestamps.sum()} rows!")
+        if not df_grouped.shape[0] == rows_out:
+            print(f"[Warning] Grouped DataFrame has {df_grouped.shape[0]} rows, expected {rows_out} rows!")
+
+        print(f"[Info] all columns grouped, resulting shape: {df_grouped.shape}")
+        return df_grouped
+    
+    else:
+        print("[Info] No duplicate timestamps found, no grouping needed.")
+        return df
