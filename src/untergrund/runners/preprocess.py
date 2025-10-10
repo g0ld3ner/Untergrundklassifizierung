@@ -7,7 +7,11 @@ import pandas as pd
 ### run preprocess Pipeline
 def run_preprocess(ctx: "Ctx") -> "Ctx":
     pipeline = CtxPipeline()
-    pipeline.add(time_to_index, source="sensors", dest="sensors")
+    pipeline.add(time_to_index, source="sensors")
+    pipeline.add(handle_nat_in_index, source="sensors")
+    pipeline.add(sort_sensors_by_time_index, source="sensors")
+    pipeline.add(group_duplicate_timeindex, source="sensors")
+    pipeline.add(validate_basic_preprocessing, source="sensors")
     pipeline.tap(show_sensor_details, source="sensors")
     return pipeline(ctx)
 
@@ -15,7 +19,7 @@ def run_preprocess(ctx: "Ctx") -> "Ctx":
 
 ### Zeitstempel -> Zeitindex
 @transform_all_sensors
-def time_to_index(df: pd.DataFrame, time_col:str="time") -> pd.DataFrame:
+def time_to_index(df: pd.DataFrame, *, time_col:str="time") -> pd.DataFrame:
     """
     Wandelt 'time' Spalte (ns seit 1970-01-01 UTC) in DatetimeIndex um.
     - Erwartet Spalte time_col:str="time" in Nanosekunden.
@@ -41,7 +45,7 @@ def time_to_index(df: pd.DataFrame, time_col:str="time") -> pd.DataFrame:
 
 ### NaT Handling
 @transform_all_sensors
-def handle_nat_in_index(df: pd.DataFrame, gap_len:int = 3) -> pd.DataFrame:
+def handle_nat_in_index(df: pd.DataFrame, *, gap_len:int = 3) -> pd.DataFrame:
     """
     Zählt NaT im Index, erkennt zusammenhängende NaT-Cluster (in Samples) und dropt NaT-Zeilen.
     Warnung, wenn ein Cluster >= gap_len Samples umfasst.

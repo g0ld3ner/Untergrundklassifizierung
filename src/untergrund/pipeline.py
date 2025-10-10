@@ -1,11 +1,80 @@
 from dataclasses import is_dataclass, replace, fields as dc_fields
 from typing import Callable, Optional, Any, Sequence
+from inspect import signature, Parameter
+from functools import partial
 import copy
 
 from .context import Ctx
 
 
+# ---------- kleine Utilities (lokal, ohne Decorator-Kopplung) ----------
+
+def _defensive_copy_kwargs(kw: dict[str, Any]) -> dict[str, Any]:
+    """Shallow-Kopie mutabler kwarg-Werte (best-effort)."""
+    safe: dict[str, Any] = {}
+    for k, v in kw.items():
+        if hasattr(v, "copy") and callable(getattr(v, "copy")):
+            try:
+                safe[k] = v.copy()
+                continue
+            except Exception:
+                pass
+        safe[k] = v
+    return safe
+
+
+def _validate_kwargs_for_fn(fn: Callable[..., Any], fn_kwargs: dict[str, Any]) -> None:
+    """
+    Erlaubt nur keyword-fähige Parameter (oder **kwargs), aber NIE 'sensor_name'.
+    Wird genutzt, wenn kein 'with_kwargs' vorhanden ist.
+    """
+    if "sensor_name" in fn_kwargs:
+        raise TypeError("Passing 'sensor_name' via fn_kwargs is not allowed (reserved for decorators).")
+
+    sig = signature(fn)
+    params = sig.parameters.values()
+
+    # **kwargs → alles erlaubt (abgesehen von sensor_name)
+    if any(p.kind == Parameter.VAR_KEYWORD for p in params):
+        return
+
+    allowed = {p.name for p in params if p.kind in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)}
+    unknown = set(fn_kwargs) - allowed
+    if unknown:
+        raise TypeError(
+            f"Unknown kwargs for {getattr(fn,'__name__',repr(fn))}: {sorted(unknown)} | allowed: {sorted(allowed)}"
+        )
+
+
+def _label_for_callable(f: Callable[..., Any]) -> str:
+    """
+    Saubere Label-Darstellung:
+    - functools.partial → name(k=v, ...)
+    - sonst __name__ oder Klassenname
+    - Werte werden gekürzt, Keys alphabetisch.
+    """
+    try:
+        # functools.partial?
+        if isinstance(f, partial):
+            base = getattr(f.func, "__name__", f.func.__class__.__name__)
+            kw = getattr(f, "keywords", None) or {}
+            if kw:
+                items = []
+                for k in sorted(kw):
+                    v = repr(kw[k])
+                    v = (v[:30] + "…") if len(v) > 30 else v
+                    items.append(f"{k}={v}")
+                return f"{base}({', '.join(items)})"
+            return base
+        # Wrapper mit __name__
+        name = getattr(f, "__name__", None)
+        return name or f.__class__.__name__
+    except Exception:
+        return repr(f)
+
+
 # ---------- CtxPipeline: Ctx→Ctx Pipeline für dataclasses ----------
+
 class CtxPipeline:
     """
     Ctx→Ctx-Pipeline für reine Datenfunktionen (ohne Ctx-Wissen).
@@ -20,12 +89,14 @@ class CtxPipeline:
     - Tap/Inspect ist read-only (kein Ctx-Schreiben).
 
     API:
-      add(fn, *, source: str | Sequence[str], dest: Optional[str] = None, name: Optional[str] = None)
+      add(fn, *, source: str | Sequence[str], dest: Optional[str] = None, name: Optional[str] = None,
+          fn_kwargs: Optional[dict[str, Any]] = None)
         - source=str:    fn bekommt genau dieses Teilobjekt.
                          dest=None ⇒ In-Place (dest=source).
         - source=list:   fn(*values) in Reihenfolge von `source`.
                          dest MUSS gesetzt sein.
         - name:          Optionaler Anzeigename (repr / Fehlermeldungen).
+        - fn_kwargs:     Nur Keyword-Parameter; werden früh validiert/gebunden.
 
       tap(inspector, *, projector=None, deepcopy=True, name=None)
         - inspector:  Callable, das auf der (optionalen) Projektion arbeitet.
@@ -69,13 +140,32 @@ class CtxPipeline:
         source: str | Sequence[str],
         dest: Optional[str] = None,
         name: Optional[str] = None,
+        fn_kwargs: Optional[dict[str, Any]] = None,
     ) -> "CtxPipeline":
         """
         Hängt einen Routing-Step an. Funktion steht immer vorn.
         - Single-Source:  source=str, dest optional (In-Place wenn None)
         - Multi-Source:   source=list[str], dest Pflicht
+        - fn_kwargs:      Nur Keyword-Parameter; früh validiert/gebunden.
+                          Falls `fn.with_kwargs` existiert → wird bevorzugt genutzt.
+                          Sonst Fallback via functools.partial(fn, **kw).
         """
-        compiled = self._compile_route(fn, source=source, dest=dest, name=name)
+        # --- Parametrisierung (ohne Kopplung) ---
+        bound_fn = fn
+        if fn_kwargs:
+            # bevorzugt dekoratorseitige API (falls vorhanden)
+            if hasattr(fn, "with_kwargs") and callable(getattr(fn, "with_kwargs")):
+                try:
+                    bound_fn = fn.with_kwargs(**fn_kwargs)  # type: ignore[attr-defined]
+                except TypeError as e:
+                    raise TypeError(f"with_kwargs() rejected keys for {getattr(fn,'__name__',repr(fn))}: {e}") from e
+            else:
+                _validate_kwargs_for_fn(fn, fn_kwargs)
+                bound_fn = partial(fn, **_defensive_copy_kwargs(fn_kwargs))
+
+        # Label (falls kein custom name)
+        auto_label = _label_for_callable(bound_fn)
+        compiled = self._compile_route(bound_fn, source=source, dest=dest, name=(name or auto_label))
         self.steps.append(compiled)
         return self
 
@@ -94,11 +184,11 @@ class CtxPipeline:
                      (z. B. Log/Datei schreibt) und `None` zurückgibt.
         - deepcopy: True (Standard) => schützt sicher vor versehentlichen Mutationen.
         - name: optionaler Anzeigename (nur für __repr__/Debug).
-        
+
         Gibt den unveränderten Ctx weiter.
         """
         step_name = name or getattr(inspector, "__name__", "tap")
-        
+
         # Deepcopy Warnung
         if not deepcopy:
             print(f"WARNUNG: tap({step_name}, deepcopy=False) – Mutationen am Ctx sind möglich!")
@@ -121,7 +211,6 @@ class CtxPipeline:
         _tap.__name__ = f"tap({step_name})"
         self.steps.append(_tap)
         return self
-
 
     # ---------- Internals ----------
 
@@ -157,9 +246,8 @@ class CtxPipeline:
             dest = sources[0]
 
         # Step-Name
-        fn_name = getattr(fn, "__name__", "fn")
         left = "+".join(sources) if multi_source else sources[0]
-        label = name or fn_name
+        label = name or _label_for_callable(fn)
         step_name = f"{left}→{dest}:{label}"
 
         def _apply(ctx: Any) -> Any:
@@ -182,7 +270,7 @@ class CtxPipeline:
                 raise TypeError(f"{step_name}: Signatur passt nicht zu Quellen {sources}: {e}") from e
 
             # Immutable Update
-            return replace(ctx, **{dest: new_value}) # pyright: ignore[reportArgumentType]
+            return replace(ctx, **{dest: new_value})  # pyright: ignore[reportArgumentType]
 
         _apply.__name__ = step_name
         return _apply
@@ -217,4 +305,3 @@ def bridge(*fns: Callable[[Any], Any], name: Optional[str] = None) -> Callable[[
 
     _apply.__name__ = label
     return _apply
-
