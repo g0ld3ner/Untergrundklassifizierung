@@ -179,7 +179,7 @@ def transform_all_sensors[T](func: Callable[..., T]) -> SensorStep[T]:
             exclude: Iterable[str] | None = None,
             regex: str | None = None,
             predicate: Callable[[str, T], bool] | None = None,
-            ) -> "SensorStep[T]":
+        ) -> "SensorStep[T]":
             inc = set(include) if include else None
             exc = set(exclude) if exclude else None
             rx = re.compile(regex) if regex else None
@@ -204,19 +204,11 @@ def transform_all_sensors[T](func: Callable[..., T]) -> SensorStep[T]:
                     return out
                 else:
                     return apply(None, x)
-            
-            def with_kwargs_select(**kw: Any) -> "SensorStep[T]":
-                # 1) Core parametrisieren (ohne Selektion)
-                parametrized = with_kwargs(**kw)  # ergibt einen neuen *unselektierten* Step
-                # 2) identische Selektion erneut anwenden
-                return parametrized.select(
-                    include=include, exclude=exclude, regex=regex, predicate=predicate
-                    )
 
             # Meta-API an selektiven Wrapper binden
             selective_wrapper.select = select  # type: ignore[attr-defined]
             selective_wrapper.core = core      # type: ignore[attr-defined]
-            selective_wrapper.with_kwargs = with_kwargs_select  # type: ignore[attr-defined]
+            selective_wrapper.with_kwargs = with_kwargs  # type: ignore[attr-defined]
             return cast("SensorStep[T]", selective_wrapper)
 
         def with_kwargs(**kw: Any) -> "SensorStep[T]":
@@ -232,7 +224,7 @@ def transform_all_sensors[T](func: Callable[..., T]) -> SensorStep[T]:
                 if accepts_name_inner:
                     return func(value, sensor_name=sensor_name, **safe)  # type: ignore[misc]
                 return func(value, **safe)  # type: ignore[misc]
-        
+
             return build_wrappers(bound_core)
 
         # Meta-API an Basis-Wrapper binden
@@ -284,7 +276,7 @@ def inspect_all_sensors(func: Callable[..., None]) -> SensorInspector[object]:
             exclude: Iterable[str] | None = None,
             regex: str | None = None,
             predicate: Callable[[str, object], bool] | None = None,
-            ) -> "SensorInspector[object]":
+        ) -> "SensorInspector[object]":
             inc = set(include) if include else None
             exc = set(exclude) if exclude else None
             rx = re.compile(regex) if regex else None
@@ -310,17 +302,10 @@ def inspect_all_sensors(func: Callable[..., None]) -> SensorInspector[object]:
                 else:
                     _apply(None, x)
                     return None
-                
-            def with_kwargs_select(**kw: Any) -> "SensorInspector[object]":
-                parametrized = with_kwargs(**kw)
-                return parametrized.select(
-                    include=include, exclude=exclude, regex=regex, predicate=predicate
-                )
-
 
             selective_wrapper.select = select       # type: ignore[attr-defined]
             selective_wrapper.core = core           # type: ignore[attr-defined]
-            selective_wrapper.with_kwargs = with_kwargs_select  # type: ignore[attr-defined]
+            selective_wrapper.with_kwargs = with_kwargs  # type: ignore[attr-defined]
             return cast("SensorInspector[object]", selective_wrapper)
 
         def with_kwargs(**kw: Any) -> "SensorInspector[object]":
@@ -342,4 +327,5 @@ def inspect_all_sensors(func: Callable[..., None]) -> SensorInspector[object]:
         return cast("SensorInspector[object]", wrapper)
 
     return build_wrappers(func)
+
 
