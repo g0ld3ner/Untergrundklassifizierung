@@ -8,29 +8,31 @@ import pandas as pd
 def run_preprocess(ctx: "Ctx") -> "Ctx":
     pipeline = CtxPipeline()
     pipeline.add(time_to_index, source="sensors")
-    pipeline.add(handle_nat_in_index, source="sensors")
+    pipeline.add(handle_nat_in_index, source="sensors", fn_kwargs={"gap_len":2})
     pipeline.add(sort_sensors_by_time_index, source="sensors")
     pipeline.add(group_duplicate_timeindex, source="sensors")
     pipeline.add(validate_basic_preprocessing, source="sensors")
     pipeline.tap(show_sensor_details, source="sensors")
+    print("\nPipeline Repr:")
+    print(pipeline)
     return pipeline(ctx)
 
 
 
 ### Zeitstempel -> Zeitindex
 @transform_all_sensors
-def time_to_index(df: pd.DataFrame, *, time_col:str="time") -> pd.DataFrame:
+def time_to_index(df: pd.DataFrame, *, sensor_name:str | None = None, time_col:str="time") -> pd.DataFrame:
     """
     Wandelt 'time' Spalte (ns seit 1970-01-01 UTC) in DatetimeIndex um.
     - Erwartet Spalte time_col:str="time" in Nanosekunden.
     - Setzt Indexname auf 'time_utc' und Zeitzone auf UTC (tz-aware).
     """
     if df.empty:
-        print("[Warning] DataFrame is empty, nothing to index.")
+        print(f"[Warning] DataFrame {sensor_name} is empty, nothing to index.")
         return df
     if time_col not in df.columns:
-        raise ValueError(f"DataFrame must contain a '{time_col}' column to convert to index.")
-    
+        raise ValueError(f"DataFrame {sensor_name} must contain a '{time_col}' column to convert to index.")
+
     df_time_index = df.copy()
     df_time_index.set_index(pd.to_datetime(df_time_index[time_col], unit="ns", utc=True, errors="coerce"), inplace=True)
     df_time_index.index.name = "time_utc"
@@ -39,29 +41,27 @@ def time_to_index(df: pd.DataFrame, *, time_col:str="time") -> pd.DataFrame:
     time_nans = df[time_col].isna().sum()
     time_nats = df_time_index.index.isna().sum()
     if time_nans != time_nats:
-        print(f"[Warning] {time_nans} NaN values in '{time_col}' column, but {time_nats} NaT values in index.")
+        print(f"[Warning] DataFrame {sensor_name}: {time_nans} NaN values in '{time_col}' column, but {time_nats} NaT values in index.")
 
     return df_time_index
 
 ### NaT Handling
 @transform_all_sensors
-def handle_nat_in_index(df: pd.DataFrame, *, gap_len:int = 3) -> pd.DataFrame:
+def handle_nat_in_index(df: pd.DataFrame, *, sensor_name:str | None = None, gap_len:int = 3) -> pd.DataFrame:
     """
     Zählt NaT im Index, erkennt zusammenhängende NaT-Cluster (in Samples) und dropt NaT-Zeilen.
     Warnung, wenn ein Cluster >= gap_len Samples umfasst.
     """
     if not isinstance(df.index, pd.DatetimeIndex):
-        raise ValueError("DataFrame index must be a DatetimeIndex")
+        raise ValueError(f"DataFrame {sensor_name} index must be a DatetimeIndex")
     
     if not df.index.hasnans:
-        print("[Info] No NaT values found in index. Returning original DataFrame.")
+        print(f"[Info] DataFrame {sensor_name} has no NaT values in index. Returning original DataFrame.")
         return df
         
     nat_series = pd.Series(df.index.isna(), index=df.index) #Pandas Series statt numpy Array, damit groupby funktioniert
     nat_count = int(nat_series.sum())
-    print(f"[Warning] DataFrame index contains {nat_count} NaT values. Initial shape: {df.shape}")
-
-    
+    print(f"[Warning] DataFrame {sensor_name} index contains {nat_count} NaT values. Initial shape: {df.shape}")
     
     # Zusammenhängende NaT-Cluster erkennen
     switch_points = (nat_series != nat_series.shift()) # Wert mit vorherigem Wert (shift()) vergleichen -> wechselpunkte zwischen True/False
@@ -74,13 +74,13 @@ def handle_nat_in_index(df: pd.DataFrame, *, gap_len:int = 3) -> pd.DataFrame:
     # Warnung bei langem NaT-Cluster
     if gap_count > 0:
         longest_gap = int(group_sizes.max())
-        print(f"[Warning] Found {gap_count} NaT blocks with length >= {gap_len}! longest={longest_gap}.")
+        print(f"[Warning] DataFrame {sensor_name} found {gap_count} NaT blocks with length >= {gap_len}! longest={longest_gap}.")
         
     # Entfernen der NaT-Zeilen
     df_cleaned = df[~nat_series]
-    print(f"[Info] Removed {nat_count} NaT rows, resulting shape: {df_cleaned.shape}")
+    print(f"[Info] DataFrame {sensor_name} removed {nat_count} NaT rows, resulting shape: {df_cleaned.shape}")
     if df_cleaned.shape[0] != df.shape[0] - nat_count:
-        print(f"[Warning] After removing NaT rows, expected {df.shape[0] - nat_count} rows but got {df_cleaned.shape[0]} rows.")
+        print(f"[Warning] DataFrame {sensor_name}: After removing NaT rows, expected {df.shape[0] - nat_count} rows but got {df_cleaned.shape[0]} rows.")
     return df_cleaned
     
         
@@ -88,7 +88,7 @@ def handle_nat_in_index(df: pd.DataFrame, *, gap_len:int = 3) -> pd.DataFrame:
 
 ### Sortieren der Sensoren nach Zeitstempel
 @transform_all_sensors
-def sort_sensors_by_time_index(df: pd.DataFrame) -> pd.DataFrame:
+def sort_sensors_by_time_index(df: pd.DataFrame, *, sensor_name:str | None = None) -> pd.DataFrame:
     """
     Sortiert DataFrame nach Zeitindex (DatetimeIndex, aufsteigend, stabil).
 
@@ -98,52 +98,52 @@ def sort_sensors_by_time_index(df: pd.DataFrame) -> pd.DataFrame:
     - NaT-Werte werden ans Ende verschoben.
     """
     if not isinstance(df.index, pd.DatetimeIndex):
-        raise ValueError("DataFrame index must be a DatetimeIndex")
+        raise ValueError(f"DataFrame {sensor_name} index must be a DatetimeIndex")
     
-    # Checks before sorting
+    # vor dem Sortieren prüfen
     rows_in_df = df.shape[0]
     if rows_in_df == 0:
-        print("[Warning] DataFrame is empty, nothing to sort.")
-        return df  # Nothing to sort
+        print(f"[Warning] DataFrame {sensor_name} is empty, nothing to sort.")
+        return df # leeres DF
     if df.index.is_monotonic_increasing:
-        print("[Info] DataFrame is already sorted by time index.")
-        return df  # Already sorted
+        print(f"[Info] DataFrame {sensor_name} is already sorted by time index.")
+        return df # schon sortiert
     if df.index.has_duplicates:
-        print("[Warning] DataFrame index has duplicate time entries.")
+        print(f"[Warning] DataFrame {sensor_name} index has duplicate time entries.")
     if df.index.hasnans:
         nat_count = df.index.isna().sum()
-        print(f"[Warning] DataFrame index contains {nat_count} NaT values.")
-    
-    # Perform sorting
-    df_sorted = df.sort_index(na_position="last", kind="stable") # Stable sort -> relative order of equal elements
-    print("[Info] DataFrame sorted by time index.")
+        print(f"[Warning] DataFrame {sensor_name} index contains {nat_count} NaT values.")
+
+    # Sortieren
+    df_sorted = df.sort_index(na_position="last", kind="stable") # stabil = Reihenfolge bei gleichen Zeitstempeln bleibt erhalten
+    print(f"[Info] DataFrame {sensor_name} sorted by time index.")
 
     return df_sorted
 
 ### Gruppieren von doppelten Zeitstempeln
 @transform_all_sensors
-def group_duplicate_timeindex(df: pd.DataFrame) -> pd.DataFrame:
+def group_duplicate_timeindex(df: pd.DataFrame , *, sensor_name:str | None = None) -> pd.DataFrame:
     """
     Gruppiert Zeilen mit gleichen Zeitstempeln.
     zählt alle auftretenden Gruppen.
-        - Numerische Spalten: Median
+        - Numerische Spalten: Median (später werden evtl. noch andere Aggregationsmethoden implementiert)
         - Nicht-numerische Spalten (inklusive bool): Erster Wert
-        - NaT-Zeilen werden dedupliziert. 
+        - NaT-Zeilen werden dedupliziert. (...sollten am besten vorher schon entfernt werden)
     Gibt einen DataFrame mit eindeutigen Zeitstempeln zurück.
     """
     if not isinstance(df.index, pd.DatetimeIndex):
-        raise ValueError("DataFrame index must be a DatetimeIndex")
+        raise ValueError(f"DataFrame {sensor_name} index must be a DatetimeIndex")
     
     if df.index.has_duplicates:
         rows_in = df.shape[0]
         dup_timestamps = df.index.duplicated(keep="first")
-        print(f"[Info] {dup_timestamps.sum()} duplicate timestamps found")
+        print(f"[Info] DataFrame {sensor_name}: {dup_timestamps.sum()} duplicate timestamps found")
         rows_out = rows_in - dup_timestamps.sum()
-        print(f"[Info] estimated: reducing rows from {rows_in} to {rows_out}")
+        print(f"[Info] DataFrame {sensor_name}: estimated: reducing rows from {rows_in} to {rows_out}")
 
         # Anzahl Gruppen
         count_groups = df.index[dup_timestamps].nunique()
-        print(f"[Info] {count_groups} unique duplicate timestamp groups found")
+        print(f"[Info] DataFrame {sensor_name}: {count_groups} unique duplicate timestamp groups found")
 
         # Gruppen bilden getrennt nach numerischen und nicht-numerischen Spalten
         df_numeric = pd.DataFrame(index=df.index)
@@ -169,18 +169,18 @@ def group_duplicate_timeindex(df: pd.DataFrame) -> pd.DataFrame:
 
         # kurze Validierung
         if not df_grouped.index.is_monotonic_increasing:
-            print("[Warning] Grouped DataFrame index is not sorted!")
+            print(f"[Warning] Grouped DataFrame {sensor_name}: index is not sorted!")
         rows_removed = rows_in - df_grouped.shape[0]
         if not rows_removed == dup_timestamps.sum():
-            print(f"[Warning] Grouped DataFrame removed {rows_removed} rows, but expected to remove {dup_timestamps.sum()} rows!")
+            print(f"[Warning] Grouped DataFrame {sensor_name}: removed {rows_removed} rows, but expected to remove {dup_timestamps.sum()} rows!")
         if not df_grouped.shape[0] == rows_out:
-            print(f"[Warning] Grouped DataFrame has {df_grouped.shape[0]} rows, expected {rows_out} rows!")
+            print(f"[Warning] Grouped DataFrame {sensor_name}: has {df_grouped.shape[0]} rows, expected {rows_out} rows!")
 
-        print(f"[Info] all columns grouped, resulting shape: {df_grouped.shape}")
+        print(f"[Info] Grouped DataFrame {sensor_name}: all columns grouped, resulting shape: {df_grouped.shape}")
         return df_grouped
     
     else:
-        print("[Info] No duplicate timestamps found, no grouping needed.")
+        print(f"[Info] DataFrame {sensor_name}: No duplicate timestamps found, no grouping needed.")
         return df
     
 ### Validierung der Basisfunktionen des Preprocessings
