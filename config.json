@@ -1,5 +1,15 @@
 {
   "input_path": "data/testdaten.json",
   "sensor_list": ["Accelerometer","Gyroscope","GameOrientation","Location"],
+  "resample_imu": {
+    "target_rate": 200,
+    "agg_func": "mean",
+    "interp_method": "time"
+  },
+  "resample_location": {
+    "target_rate": 1,
+    "fill_method": "ffill",
+    "limit": null
+  },
   "test_key": "test_value"
 }
