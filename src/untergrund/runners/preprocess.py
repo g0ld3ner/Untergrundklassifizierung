@@ -1,3 +1,5 @@
+from typing_extensions import Literal
+from typing import Any
 from ..pipeline import CtxPipeline
 from ..shared.inspect import show_sensor_details
 from ..shared.sensors import transform_all_sensors
@@ -11,6 +13,8 @@ def run_preprocess(ctx: "Ctx") -> "Ctx":
     pipeline.add(handle_nat_in_index, source="sensors", fn_kwargs={"gap_len":2})
     pipeline.add(sort_sensors_by_time_index, source="sensors")
     pipeline.add(group_duplicate_timeindex, source="sensors")
+    pipeline.add(resample_imu_sensors.select(exclude=["Location"]), source="sensors", fn_kwargs={"cfg": ctx.config})
+    pipeline.add(resample_location_sensors.select(include=["Location"]), source="sensors", fn_kwargs={"cfg": ctx.config})
     pipeline.add(validate_basic_preprocessing, source="sensors")
     pipeline.tap(show_sensor_details, source="sensors")
     print("\nPipeline Repr:")
@@ -232,7 +236,81 @@ def validate_basic_preprocessing(df: pd.DataFrame, *, sensor_name: str) -> pd.Da
     if df.shape[1] == 0:
         print(f"[Warning] Sensor '{sensor_name}' has no columns.")
 
-
-
     print(f"[Info] DataFrame '{sensor_name}' passed all basic preprocessing validations.")
     return df   
+
+### Resample IMU Sensoren auf einheitliche Abtastrate
+@transform_all_sensors
+def resample_imu_sensors(df: pd.DataFrame, *, cfg: dict[str, Any] | None = None, target_rate: int = 200, agg_func: Literal["mean","median","first","last"] = "mean", interp_method: Literal["linear","time","nearest","pad"] = "time") -> pd.DataFrame:
+    """
+    Alle IMU-Sensoren auf eine einheitliche Abtastrate resamplen.
+    -> Nicht-numerische Spalten werden entfernt
+    - target_rate: Zielabtastrate in Hz
+    - agg_func: Aggregationsmethode für Resampling
+        - mean: Mittelwert
+        - median: Median
+        - first: Erster Wert
+        - last: Letzter Wert
+    - interp_method: Interpolationsmethode für fehlende Werte nach Resampling
+        - linear: lineare Interpolation
+        - time: zeitbasierte Interpolation
+        - nearest: nächster Wert
+        - pad: vorheriger Wert (Vorwärtsfüllung)
+    * cfg optional: Konfigurationsdictionary, um Parameter zu überschreiben
+    """
+    # Nur numerische Spalten weiterverarbeiten (restliche Spalten gehen verloren!)
+    df = df.select_dtypes(include="number")
+    # Parameter aus config laden, falls vorhanden -> fallback auf Default-Parameter
+    if cfg and "resample_imu" in cfg:
+        target_rate = cfg["resample_imu"].get("target_rate", target_rate)
+        agg_func = cfg["resample_imu"].get("agg_func", agg_func)
+        interp_method = cfg["resample_imu"].get("interp_method", interp_method)
+    else:
+        print("[Info] No 'resample_imu' config found, using default parameters.")
+    # von Hz in ms
+    step = pd.to_timedelta(1 / target_rate, unit='s')
+    # Resampling
+    out = df.resample(step, origin="epoch", label="left", closed="left").agg(agg_func)
+    if interp_method == "pad":
+        out = out.interpolate(method="pad", limit=None, limit_direction="forward") # type: ignore[arg-type] #checker kennt 'pad' nicht
+    else:
+        out = out.interpolate(method=interp_method, limit=None, limit_direction="both")
+    # erste Zeile kann NaN enthalten, wenn der erste Zeitstempel nicht genau auf das Resample-Ziel fällt -> entfernen
+    if out.iloc[0].isna().all():
+        out = out.iloc[1:]
+    return out
+
+### Resample Location Sensoren auf einheitliche Abtastrate
+@transform_all_sensors
+def resample_location_sensors(df: pd.DataFrame, *, cfg: dict[str, Any] | None = None, target_rate: int = 1, fill_method: Literal["ffill", "nearest"] = "ffill", limit: int | None = None) -> pd.DataFrame:
+    """
+    Alle Location-Sensoren auf eine einheitliche Abtastrate resamplen.
+    -> Nicht-numerische Spalten werden entfernt!
+    - target_rate: Zielabtastrate in Hz
+    - fill_method: Methode zum Auffüllen fehlender Werte nach Resampling
+        - ffill: Vorwärtsfüllung (forward fill)
+        - nearest: nächster Wert
+    * cfg optional: Konfigurationsdictionary, um Parameter zu überschreiben
+    """
+    # Nur numerische Spalten weiterverarbeiten (restliche Spalten gehen verloren!)
+    df = df.select_dtypes(include="number")
+    # Parameter aus config laden, falls vorhanden -> fallback auf Default-Parameter
+    if cfg and "resample_location" in cfg:
+        target_rate = cfg["resample_location"].get("target_rate", target_rate)
+        fill_method = cfg["resample_location"].get("fill_method", fill_method)
+        limit = cfg["resample_location"].get("limit", limit)
+    else:
+        print("[Info] No 'resample_location' config found, using default parameters.")
+    # von Hz in ms
+    step = pd.to_timedelta(1 / target_rate, unit='s')
+    # Resampling
+    if fill_method == "ffill":
+        out = df.resample(step, origin="epoch", label="left", closed="left").ffill(limit=limit)
+    elif fill_method == "nearest":
+        out = df.resample(step, origin="epoch", label="left", closed="left").nearest(limit=limit)
+    else:
+        raise ValueError(f"Unknown aggregation method: {fill_method}")
+    # erste Zeile kann NaN enthalten, wenn der erste Zeitstempel nicht genau auf das Resample-Ziel fällt -> entfernen
+    if out.iloc[0].isna().all():
+        out = out.iloc[1:]
+    return out

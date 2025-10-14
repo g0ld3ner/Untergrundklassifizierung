@@ -20,5 +20,8 @@ if __name__ == "__main__":
     print("\n--- Test run complete ---\n")
     print(type(test.sensors))
     print(test.sensors.keys())
+    print(test.sensors["Location"])
+    print(test.sensors["Location"].info())
     print(test.sensors["Accelerometer"].head())
+    print(test.sensors["Accelerometer"].info())
 
