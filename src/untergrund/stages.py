@@ -5,6 +5,7 @@ class Stage(Enum):
     INGEST = auto()          # Einlesen, Sensor-Dict bauen, Metadata extrahieren
     SELECT = auto()          # gewünschte Sensoren filtern, fehlende melden
     PREPROCESS = auto()      # Zeitindex/UTC, Cleaning, Resample, etc.
-    FEATURES = auto()        # Windowing (zuerst) + Feature-Berechnung
+    WINDOW = auto()      # Zeitfenster als DataFrame
+    FEATURES = auto()        # Feature-Berechnung und Zusammenführung in das DataFrame aus Windowing
     CLASSIFY = auto()  # Klassifikation innerhalb der einen Fahrt (ML)
-    EXPORT = auto()          # Artefakte persistieren (Features,,Preds, Config, etc.)
+    EXPORT = auto()          # Artefakte persistieren (Features, Preds, Config, etc.)
