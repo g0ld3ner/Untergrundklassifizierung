@@ -11,5 +11,9 @@
     "fill_method": "ffill",
     "limit": null
   },
+  "trim_to_common_timeframe": {
+    "align_to_sensor": null,
+    "warn_if_cur_seconds": 10
+  },
   "test_key": "test_value"
 }

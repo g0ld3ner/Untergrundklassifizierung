@@ -9,6 +9,7 @@ _REQUIRED = {
 _OPTIONAL = {
     "resample_imu": dict,
     "resample_location": dict,
+    "trim_to_common_timeframe": dict,
 }
 
 def validate_config(cfg: dict[str, Any]) -> dict[str, Any]:
