@@ -1,5 +1,5 @@
 from typing_extensions import Literal
-from typing import Any
+from typing import Any, cast
 from ..pipeline import CtxPipeline
 from ..shared.inspect import show_sensor_details
 from ..shared.sensors import transform_all_sensors
@@ -16,6 +16,7 @@ def run_preprocess(ctx: "Ctx") -> "Ctx":
     pipeline.add(resample_imu_sensors.select(exclude=["Location"]), source="sensors", fn_kwargs={"cfg": ctx.config})
     pipeline.add(resample_location_sensors.select(include=["Location"]), source="sensors", fn_kwargs={"cfg": ctx.config})
     pipeline.add(validate_basic_preprocessing, source="sensors")
+    pipeline.add(trim_to_common_timeframe, source="sensors", fn_kwargs={"cfg": ctx.config})
     pipeline.tap(show_sensor_details, source="sensors")
     print("\nPipeline Repr:")
     print(pipeline)
@@ -314,3 +315,95 @@ def resample_location_sensors(df: pd.DataFrame, *, cfg: dict[str, Any] | None = 
     if out.iloc[0].isna().all():
         out = out.iloc[1:]
     return out
+
+
+### Auf einheitlichen Start/Ende trimmen
+# keine @transform_all_sensors, da alle Sensoren zusammen betrachtet werden müssen
+def trim_to_common_timeframe(sensors_dict: dict[str, pd.DataFrame], *, cfg: dict[str, Any] | None = None, align_to_sensor: str | None = None,warn_if_cut_seconds: int | None = None) -> dict[str, pd.DataFrame]:
+    """
+    Trimmt alle Sensoren auf den gemeinsamen Zeitrahmen.
+    - Findet den spätesten Startzeitpunkt und den frühesten Endzeitpunkt aller Sensoren.
+    - Schneidet alle Sensoren auf diesen gemeinsamen Zeitraum zu.
+    - align_to_sensor: Optionaler Sensorname, an den alle anderen Sensoren angepasst werden. Sonst Gemeinsamer Zeitraum über alle Sensoren.
+    - Gibt Warnungen aus "warn_if_cut_seconds" Sekunden oder länger abgeschnitten wird.
+    - Es wird davon ausgegangen, dass alle DataFrames:
+        - einen DatetimeIndex haben
+        - sortiert sind
+        - keine Duplikate im Index haben
+        - monoton aufsteigend sind
+        - keine NaT-Werte im Index haben
+         -> NaT-Werte werden bis zum nächsten validen Timestamp übersprungen (ggf. simple variante mit df.index[0])
+    """
+    if not isinstance(sensors_dict, dict):
+        raise ValueError("sensors_dict must be a dictionary")
+    if not all(isinstance(df, pd.DataFrame) for df in sensors_dict.values()):
+        raise ValueError("All values in sensors_dict must be DataFrames")
+    if any(df.empty for df in sensors_dict.values()):
+        raise ValueError("At least one DataFrame in sensors_dict is empty")
+    ## Soft Variante: leere Sensoren ignorieren
+    # empty_sensors = [name for name, df in sensors_dict.items() if df.empty]
+    # if empty_sensors:
+    #     print(f"[Warning] Empty sensors found: {empty_sensors}")
+    ##
+    if not all(isinstance(df.index, pd.DatetimeIndex) for df in sensors_dict.values()):
+        raise ValueError("All DataFrames in sensors_dict must have a DatetimeIndex")
+
+    # Parameter aus config laden, falls vorhanden -> fallback auf Default-Parameter
+    if cfg and "trim_to_common_timeframe" in cfg:
+        align_to_sensor = cfg["trim_to_common_timeframe"].get("align_to_sensor", align_to_sensor)
+        warn_if_cut_seconds = cfg["trim_to_common_timeframe"].get("warn_if_cut_seconds", warn_if_cut_seconds)    
+    else:
+        print("[Info] No 'trim_to_common_timeframe' config found, using default parameters.")
+
+
+    # Start und Ende bestimmen
+    def first_last_indices(d: dict[str, pd.DataFrame]) -> tuple[list[pd.Timestamp], list[pd.Timestamp], pd.Timestamp | None, pd.Timestamp | None]:
+        """Liste aller ersten und letzten Indizes der DataFrames, sowie den frühesten und spätesten Zeitpunkt insgesamt."""
+        first_indices = [cast(pd.Timestamp, idx) for df in d.values() if (idx := df.first_valid_index()) is not None and isinstance(idx, pd.Timestamp)] # ggf. simple variante mit df.index[0] implemenrieren... performace und so...
+        last_indices = [cast(pd.Timestamp, idx) for df in d.values() if (idx := df.last_valid_index()) is not None and isinstance(idx, pd.Timestamp)]
+        earliest = min(first_indices) if first_indices else None
+        latest = max(last_indices) if last_indices else None
+        return first_indices, last_indices, earliest, latest
+
+    def common_start_end(d: dict[str, pd.DataFrame]) -> tuple[pd.Timestamp | None, pd.Timestamp | None, pd.Timestamp | None, pd.Timestamp | None]:
+        """Findet den frühesten gemeinsamen Start- und den spätesten gemeinsamen Endzeitpunkt der DataFrames."""
+        first_indices , last_indices, earliest, latest = first_last_indices(d)
+        start = max(first_indices) if first_indices else None
+        end = min(last_indices) if last_indices else None
+        return start, end, earliest, latest
+
+    def start_end_align_to_sensor(d: dict[str, pd.DataFrame], ats: str) -> tuple[pd.Timestamp | None, pd.Timestamp | None, pd.Timestamp | None, pd.Timestamp | None]:
+        """Findet den Start- und Endzeitpunkt des angegebenen Sensors"""
+        if not ats:
+            raise ValueError("align_to_sensor is None, but required for this function.")
+        if ats not in d:
+            raise KeyError(f"align_to_sensor '{ats}' not found in sensors_dict.")
+        
+        s = d[ats].first_valid_index()
+        e = d[ats].last_valid_index()
+        start = cast(pd.Timestamp, s) if isinstance(s, pd.Timestamp) else None
+        end = cast(pd.Timestamp, e) if isinstance(e, pd.Timestamp) else None
+        _, _, earliest, latest = first_last_indices(d)
+        return start, end, earliest, latest
+    
+    if align_to_sensor:
+        start, end, earliest, latest = start_end_align_to_sensor(sensors_dict, align_to_sensor)
+    else:
+        start, end, earliest, latest = common_start_end(sensors_dict)
+
+    if start is None or end is None:
+        raise ValueError("Start or end is None -> cannot trim sensors.")
+    if start > end:
+        raise ValueError("Start time > end time -> cannot trim sensors.")
+    
+    # Warnung, wenn viel abgeschnitten wird
+    if warn_if_cut_seconds is not None and earliest is not None and latest is not None:
+        trimmed_from_start = (start - earliest).total_seconds()
+        trimmed_from_end = (latest - end).total_seconds()
+        if trimmed_from_start >= warn_if_cut_seconds:
+            print(f"[Warning] Trimming {trimmed_from_start} seconds from the start.")
+        if trimmed_from_end >= warn_if_cut_seconds:
+            print(f"[Warning] Trimming {trimmed_from_end} seconds from the end.")
+
+    # zuschneiden aller Sensoren
+    return {sensor_name: sensor_df.loc[start:end].copy() for sensor_name, sensor_df in sensors_dict.items()} # copy(), nur zur sicherheit
