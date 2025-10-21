@@ -50,6 +50,31 @@ def time_to_index(df: pd.DataFrame, *, sensor_name:str | None = None, time_col:s
 
     return df_time_index
 
+### Bestimmte Spalten entfernen
+@transform_all_sensors
+def drop_columns(df: pd.DataFrame, *, sensor_name:str | None = None, columns_to_drop:list[str]|None=None) -> pd.DataFrame:
+    """
+    Entfernt bestimmte Spalten aus jedem Sensor-DataFrame.
+    - Standardmäßig wird die Spalte "seconds_elapsed" entfernt.
+    TODO: Config unterstützung einbauen
+    """
+    columns_to_drop = columns_to_drop or ["seconds_elapsed"]
+    if df.empty:
+        print(f"[Warning] DataFrame {sensor_name} is empty, nothing to drop.")
+        return df
+    df_out = df.copy()
+    
+    existing_cols_set = set(df_out.columns)
+    columns_to_drop_set = existing_cols_set & set(columns_to_drop)
+    expected_cols_count = len(existing_cols_set - columns_to_drop_set)
+    # drop
+    df_out.drop(columns=columns_to_drop_set, errors="ignore", inplace=True)
+    if len(set(df_out.columns)) == 0:
+        print(f"[Warning] DataFrame {sensor_name} has no columns left after dropping {columns_to_drop}.")
+    if len(set(df_out.columns)) != expected_cols_count:
+        print(f"[Warning] DataFrame {sensor_name}: Expected {expected_cols_count} columns after dropping, but got {len(df_out.columns)}.")
+    return df_out
+
 ### NaT Handling
 @transform_all_sensors
 def handle_nat_in_index(df: pd.DataFrame, *, sensor_name:str | None = None, gap_len:int = 3) -> pd.DataFrame:

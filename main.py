@@ -30,7 +30,7 @@ if __name__ == "__main__":
     for s, df in test.sensors.items():
         print(f"---{s}---")
         print(df.info())
-        print("-------------\n")
+        print("\n")
 
     print("\nStart- und Endzeitpunkte der Sensoren:\n")
     for s, df in test.sensors.items():
@@ -38,4 +38,3 @@ if __name__ == "__main__":
         end = df.index[-1]
         print(f"{s:<20} Start: {start}  Ende: {end} Länge: {end - start}")
         
-
