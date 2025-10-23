@@ -1,15 +1,20 @@
-from typing_extensions import Literal
-from typing import Any, cast
+from typing import Any, cast, Literal, Callable
 from ..pipeline import CtxPipeline
 from ..shared.inspect import show_sensor_details
 from ..shared.sensors import transform_all_sensors
 from ..context import Ctx
 import pandas as pd
+import numpy as np
+from scipy.signal import butter, sosfiltfilt
+
+
 
 ### run preprocess Pipeline
 def run_preprocess(ctx: "Ctx") -> "Ctx":
     pipeline = CtxPipeline()
     pipeline.add(time_to_index, source="sensors")
+    pipeline.add(nan_handling, source="sensors", fn_kwargs={"method":"drop", "warn_threshold":0.01})
+    pipeline.add(drop_columns, source="sensors", fn_kwargs={"columns_to_drop":["seconds_elapsed"]})
     pipeline.add(handle_nat_in_index, source="sensors", fn_kwargs={"gap_len":2})
     pipeline.add(sort_sensors_by_time_index, source="sensors")
     pipeline.add(group_duplicate_timeindex, source="sensors")
@@ -17,6 +22,8 @@ def run_preprocess(ctx: "Ctx") -> "Ctx":
     pipeline.add(resample_location_sensors.select(include=["Location"]), source="sensors", fn_kwargs={"cfg": ctx.config})
     pipeline.add(trim_to_common_timeframe, source="sensors", fn_kwargs={"cfg": ctx.config})
     pipeline.add(validate_basic_preprocessing, source="sensors")
+    pipeline.add(high_pass_filter.select(include=["Accelerometer"]), source="sensors", fn_kwargs={"cfg": ctx.config})
+    pipeline.add(high_pass_filter.select(include=["Gyroscope"]), source="sensors", fn_kwargs={"cfg": ctx.config})
     pipeline.tap(show_sensor_details, source="sensors")
     print("\nPipeline Repr:")
     print(pipeline)
@@ -49,6 +56,52 @@ def time_to_index(df: pd.DataFrame, *, sensor_name:str | None = None, time_col:s
         print(f"[Warning] DataFrame {sensor_name}: {time_nans} NaN values in '{time_col}' column, but {time_nats} NaT values in index.")
 
     return df_time_index
+
+@transform_all_sensors
+def nan_handling(
+    df: pd.DataFrame,
+    *,
+    sensor_name:str | None = None,
+    warn_threshold: float = 0.05,
+    method: Literal["drop", "ffill", "bfill"] = "ffill"
+) -> pd.DataFrame:
+    """
+    Entfernt oder füllt NaN-Werte eines DataFrames basierend auf der angegebenen Methode:
+      - "drop" = Zeilen mit NaN löschen
+      - "ffill" = vorwärts, dann rückwärts füllen
+      - "bfill" = rückwärts, dann vorwärts füllen
+    """
+    # TODO: config unterstützung implementieren
+
+    sum_nans = df.isna().sum().sum()
+    size = df.size
+
+    # Ausgaben
+    if sum_nans == 0:
+        print(f"[Info] DataFrame {sensor_name} has no NaN values. No handling needed.")
+        return df
+    else:
+        print(f"[Info] DataFrame {sensor_name} contains {sum_nans} NaN values. -> Applying {method} to handle them.")
+    if sum_nans / size > warn_threshold:
+        print(f"[Warning] DataFrame {sensor_name} has more than {warn_threshold * 100}% NaN values ({sum_nans} NaNs in {size} total).")
+
+    # TODO: längere gaps erkennen und warnen
+    # TODO: ggf. intelligente Methodik verwenden
+   
+    # Methoden
+    handlers: dict[str, Callable] = {
+        "drop":   lambda x: x.dropna(),
+        "ffill":  lambda x: x.fillna(method="ffill").fillna(method="bfill"),
+        "bfill":  lambda x: x.fillna(method="bfill").fillna(method="ffill"),
+    }
+    # ist die Methode zulässig?
+    allowed = set(handlers.keys())
+    if method not in allowed:
+        raise ValueError(f"Unknown NaN handling method: {method}. Allowed methods: {allowed}")
+    
+    # handling
+    return handlers[method](df)
+    
 
 ### Bestimmte Spalten entfernen
 @transform_all_sensors
@@ -432,3 +485,80 @@ def trim_to_common_timeframe(sensors_dict: dict[str, pd.DataFrame], *, cfg: dict
 
     # zuschneiden aller Sensoren
     return {sensor_name: sensor_df.loc[start:end].copy() for sensor_name, sensor_df in sensors_dict.items()} # copy(), nur zur sicherheit
+
+
+### High-Pass Filter
+@transform_all_sensors
+def high_pass_filter(df: pd.DataFrame,
+                    *,
+                    sensor_name: str | None = None,
+                    cfg: dict[str, Any] | None = None,
+                    cutoff_freq: float = 2,
+                    sample_rate: float = 200.0,
+                    order: int = 4,
+                    include_columns: list[str] | None = None
+                    ) -> pd.DataFrame:
+    """
+    Wendet einen Hochpassfilter auf alle oder ausgewählte numerischen Spalten des DataFrames an.
+    Wir gehen davon aus:
+    - keine NaN-Werte (oder Inf-Werte) im DataFrame
+    - keine duplikate im Index
+    - monoton aufsteigender DatetimeIndex
+    - gleichmäßige Abtastrate (sample_rate)
+    - cutoff_freq > 0, sample_rate > 0, order >= 1
+    - Grenzfrequenz in einem soliden Bereich (0.02 < wn < 0.8)
+    """
+    # TODO: Samplerate ermitteln statt als parameter übergeben! (index diff sollte konstant sein)
+
+    # Parameter aus config laden, falls vorhanden -> fallback auf Default-Parameter
+    if cfg and sensor_name in cfg.get("hp_filters", {}):
+        sensor_cfg = cfg["hp_filters"][sensor_name]
+        cutoff_freq = sensor_cfg.get("cutoff_freq", cutoff_freq)
+        sample_rate = sensor_cfg.get("sample_rate", sample_rate)
+        order = sensor_cfg.get("order", order)
+        include_columns = sensor_cfg.get("include_columns", include_columns)
+        
+    # Normalisierte Grenzfrequenz berechnen
+    wn = cutoff_freq / (sample_rate/2)
+
+    # Voraussetzungen prüfen
+    if not 0.02 <= wn <= 0.8:
+        raise ValueError(f"Normalized cutoff frequency wn={wn} out of valid range.")
+    pad_len = 3 * (order + 1)  # Padding-Länge für filtfilt
+    if df.shape[0] < pad_len:
+        raise ValueError(f"DataFrame {sensor_name} has too few samples ({df.shape[0]}) for filtering. Reduce order or resample to higher sample_rate. (len(df) < 3 * (order + 1))")
+    if df.isna().any().any():
+        raise ValueError(f"DataFrame {sensor_name} contains NaN values. Please handle them before applying the high-pass filter.")
+
+    # Zu filternde Spalten auswählen
+    if include_columns is None:
+        df_to_filter = df.select_dtypes(include="number").astype("float64").copy() # alle numerischen Spalten
+    else:
+        if not all(col in df.columns for col in include_columns):
+            missing_cols = [col for col in include_columns if col not in df.columns]
+            raise ValueError(f"DataFrame {sensor_name} is missing columns for high-pass filter: {missing_cols}")
+        num_cols = df[include_columns].select_dtypes(include="number").columns
+        if len(num_cols) != len(include_columns):
+            raise ValueError(f"DataFrame {sensor_name}: include_columns contains non-numerical columns.")
+        df_to_filter = df[include_columns].astype("float64").copy() # nur angegebene Spalten
+
+    # prüfen, ob noch Spalten zum Filtern übrig sind
+    if df_to_filter.empty:
+            raise ValueError(f"DataFrame {sensor_name} has no more numerical columns to apply the high-pass filter.")
+    
+    # Filter erstellen und anwenden
+    sos = butter(order, wn, btype='highpass', output='sos')
+    filtered = sosfiltfilt(sos, df_to_filter.to_numpy(), axis=0)
+
+    # Plausibilitätscheck
+    if not np.isfinite(filtered).all():
+        print(f"[WARNING] {sensor_name}: Filtering produced non-finite values (NaN/Inf).")
+    # TODO: weitere Plausibilitätschecks:
+    # - Mittelwerte vor/nach Filterung vergleichen -> nahe 0?
+    # - Varianzen vor/nach Filterung vergleichen -> Varianz kleiner?
+    # - Spalten nahezu konstant? -> Parameter anpassen?
+
+    # Ergebnis zusammenbauen
+    hp_df = df.copy()
+    hp_df[df_to_filter.columns] = filtered
+    return hp_df
