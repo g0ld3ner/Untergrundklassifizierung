@@ -228,10 +228,21 @@ def transform_all_sensors[T](func: Callable[..., T]) -> SensorStep[T]:
             safe = _defensive_copy_kwargs(kw)
             accepts_name_inner = "sensor_name" in signature(func).parameters
 
+            # kurze, diff-freundliche Label-Darstellung für kwargs
+            
             def bound_core(value: T, *, sensor_name: SensorName = None) -> T:
                 if accepts_name_inner:
                     return func(value, sensor_name=sensor_name, **safe)  # type: ignore[misc]
                 return func(value, **safe)  # type: ignore[misc]
+            
+            base = getattr(func, "__name__", func.__class__.__name__)
+            try:
+                bound_core.__name__ = base   # Basisname als Fallback
+                bound_core.__qualname__ = base
+            except Exception:
+                pass
+            setattr(bound_core, "_base_name", base)
+            setattr(bound_core, "_bound_kwargs", safe.copy())
         
             return build_wrappers(bound_core)
 
@@ -333,6 +344,15 @@ def inspect_all_sensors(func: Callable[..., None]) -> SensorInspector[object]:
                     func(value, sensor_name=sensor_name, **safe)  # type: ignore[misc]
                 else:
                     func(value, **safe)  # type: ignore[misc]
+            
+            base = getattr(func, "__name__", func.__class__.__name__)
+            try:
+                bound_core.__name__ = base   # Basisname als Fallback
+                bound_core.__qualname__ = base
+            except Exception:
+                pass
+            setattr(bound_core, "_base_name", base)
+            setattr(bound_core, "_bound_kwargs", safe.copy())
 
             return build_wrappers(bound_core)
 

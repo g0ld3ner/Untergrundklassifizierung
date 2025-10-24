@@ -4,8 +4,6 @@ from inspect import signature, Parameter
 from functools import partial
 import copy
 
-from .context import Ctx
-
 
 # ---------- kleine Utilities (lokal, ohne Decorator-Kopplung) ----------
 
@@ -53,24 +51,55 @@ def _label_for_callable(f: Callable[..., Any]) -> str:
     - sonst __name__ oder Klassenname
     - Werte werden gekürzt, Keys alphabetisch.
     """
+    def _short(v: Any, maxlen: int = 1000) -> str:
+        s = repr(v)
+        return s if len(s) <= maxlen else (s[:maxlen] + "…")
     try:
-        # functools.partial?
+        # 1) Bevorzugt Metadaten vom Decorator
+        if hasattr(f, "_base_name"):
+            base = getattr(f, "_base_name")
+            kw = getattr(f, "_bound_kwargs", None) or {}
+            if kw:
+                if "cfg" in kw.keys():  # Sonderbehandlung für große Config-Dicts
+                    kw = kw.copy()
+                    kw["cfg"] = "{...}"
+                items = [f"{k}={_short(kw[k])}" for k in sorted(kw)]
+                return f"{base}({', '.join(items)})"
+            return base
+        # 2) functools.partial
         if isinstance(f, partial):
             base = getattr(f.func, "__name__", f.func.__class__.__name__)
             kw = getattr(f, "keywords", None) or {}
             if kw:
-                items = []
-                for k in sorted(kw):
-                    v = repr(kw[k])
-                    v = (v[:30] + "…") if len(v) > 30 else v
-                    items.append(f"{k}={v}")
+                if "cfg" in kw.keys():  # Sonderbehandlung für große Config-Dicts
+                    kw = kw.copy()
+                    kw["cfg"] = "{...}"
+                items = [f"{k}={_short(kw[k])}" for k in sorted(kw)]
                 return f"{base}({', '.join(items)})"
             return base
-        # Wrapper mit __name__
-        name = getattr(f, "__name__", None)
-        return name or f.__class__.__name__
+        # 3) Fallback: __name__ oder Klassenname
+        return getattr(f, "__name__", f.__class__.__name__)
     except Exception:
         return repr(f)
+    # OLD:
+    # try:
+    #     # functools.partial?
+    #     if isinstance(f, partial):
+    #         base = getattr(f.func, "__name__", f.func.__class__.__name__)
+    #         kw = getattr(f, "keywords", None) or {}
+    #         if kw:
+    #             items = []
+    #             for k in sorted(kw):
+    #                 v = repr(kw[k])
+    #                 v = (v[:30] + "…") if len(v) > 5000 else v
+    #                 items.append(f"{k}={v}")
+    #             return f"{base}({', '.join(items)})"
+    #         return base
+    #     # Wrapper mit __name__
+    #     name = getattr(f, "__name__", None)
+    #     return name or f.__class__.__name__
+    # except Exception:
+    #     return repr(f)
 
 
 # ---------- CtxPipeline: Ctx→Ctx Pipeline für dataclasses ----------
@@ -128,7 +157,7 @@ class CtxPipeline:
         if not self.steps:
             return "CtxPipeline: (empty)"
         names = [getattr(f, "__name__", repr(f)) for f in self.steps]
-        numbered = [f"{i:02} → {nm}" for i, nm in enumerate(names, start=1)]
+        numbered = [f"{i:02}  {nm}" for i, nm in enumerate(names, start=1)]
         return "CtxPipeline:\n  " + "\n  ".join(numbered)
 
     # ---------- Public API ----------
@@ -248,7 +277,7 @@ class CtxPipeline:
         # Step-Name
         left = "+".join(sources) if multi_source else sources[0]
         label = name or _label_for_callable(fn)
-        step_name = f"{left}→{dest}:{label}"
+        step_name = f"{left} → {dest}: {label}"
 
         def _apply(ctx: Any) -> Any:
             # Validierung der Felder am realen ctx-Objekt

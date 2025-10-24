@@ -18,7 +18,8 @@ def run_preprocess(ctx: "Ctx") -> "Ctx":
     pipeline.add(handle_nat_in_index, source="sensors", fn_kwargs={"gap_len":2})
     pipeline.add(sort_sensors_by_time_index, source="sensors")
     pipeline.add(group_duplicate_timeindex, source="sensors")
-    pipeline.add(resample_imu_sensors.select(exclude=["Location"]), source="sensors", fn_kwargs={"cfg": ctx.config})
+    pipeline.add(resample_imu_sensors.select(exclude=["Location", "Gyroscope"]), source="sensors", fn_kwargs={"cfg": ctx.config})
+    pipeline.add(resample_imu_sensors.select(include=["Gyroscope"]), source="sensors", fn_kwargs={"cfg": ctx.config, "target_rate":100}) #später 50
     pipeline.add(resample_location_sensors.select(include=["Location"]), source="sensors", fn_kwargs={"cfg": ctx.config})
     pipeline.add(trim_to_common_timeframe, source="sensors", fn_kwargs={"cfg": ctx.config})
     pipeline.add(validate_basic_preprocessing, source="sensors")
@@ -320,7 +321,7 @@ def validate_basic_preprocessing(df: pd.DataFrame, *, sensor_name: str) -> pd.Da
 
 ### Resample IMU Sensoren auf einheitliche Abtastrate
 @transform_all_sensors
-def resample_imu_sensors(df: pd.DataFrame, *, cfg: dict[str, Any] | None = None, target_rate: int = 200, agg_func: Literal["mean","median","first","last"] = "mean", interp_method: Literal["linear","time","nearest","pad"] = "time") -> pd.DataFrame:
+def resample_imu_sensors(df: pd.DataFrame, *, cfg: dict[str, Any] | None = None, target_rate: int = 100, agg_func: Literal["mean","median","first","last"] = "mean", interp_method: Literal["linear","time","nearest","pad"] = "time") -> pd.DataFrame:
     """
     Alle IMU-Sensoren auf eine einheitliche Abtastrate resamplen.
     -> Nicht-numerische Spalten werden entfernt
@@ -494,7 +495,7 @@ def high_pass_filter(df: pd.DataFrame,
                     sensor_name: str | None = None,
                     cfg: dict[str, Any] | None = None,
                     cutoff_freq: float = 2,
-                    sample_rate: float = 200.0,
+                    sample_rate: float = 100.0,
                     order: int = 4,
                     include_columns: list[str] | None = None
                     ) -> pd.DataFrame:
