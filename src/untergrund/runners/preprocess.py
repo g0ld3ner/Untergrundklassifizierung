@@ -1,6 +1,6 @@
 from typing import Any, cast, Literal, Callable
 from ..pipeline import CtxPipeline
-from ..shared.inspect import show_sensor_details
+from ..shared.inspect import row_col_nan_dur_freq, head_tail, print_info, print_description, start_end
 from ..shared.sensors import transform_all_sensors
 from ..context import Ctx
 import pandas as pd
@@ -13,6 +13,11 @@ from scipy.signal import butter, sosfiltfilt
 def run_preprocess(ctx: "Ctx") -> "Ctx":
     pipeline = CtxPipeline()
     pipeline.add(time_to_index, source="sensors")
+    pipeline.tap(row_col_nan_dur_freq, source="sensors")
+    # pipeline.tap(head_tail, source="sensors")
+    # pipeline.tap(print_info, source="sensors")
+    # pipeline.tap(print_description, source="sensors")
+    pipeline.tap(start_end, source="sensors")
     pipeline.add(nan_handling, source="sensors", fn_kwargs={"method":"drop", "warn_threshold":0.01})
     pipeline.add(drop_columns, source="sensors", fn_kwargs={"columns_to_drop":["seconds_elapsed"]})
     pipeline.add(handle_nat_in_index, source="sensors", fn_kwargs={"gap_len":2})
@@ -25,7 +30,11 @@ def run_preprocess(ctx: "Ctx") -> "Ctx":
     pipeline.add(validate_basic_preprocessing, source="sensors")
     pipeline.add(high_pass_filter.select(include=["Accelerometer"]), source="sensors", fn_kwargs={"cfg": ctx.config})
     pipeline.add(high_pass_filter.select(include=["Gyroscope"]), source="sensors", fn_kwargs={"cfg": ctx.config})
-    pipeline.tap(show_sensor_details, source="sensors")
+    pipeline.tap(row_col_nan_dur_freq, source="sensors")
+    # pipeline.tap(head_tail, source="sensors")
+    # pipeline.tap(print_info, source="sensors")
+    # pipeline.tap(print_description, source="sensors")
+    pipeline.tap(start_end, source="sensors")
     print("\nPipeline Repr:")
     print(pipeline)
     return pipeline(ctx)
@@ -55,7 +64,8 @@ def time_to_index(df: pd.DataFrame, *, sensor_name:str | None = None, time_col:s
     time_nats = df_time_index.index.isna().sum()
     if time_nans != time_nats:
         print(f"[Warning] DataFrame {sensor_name}: {time_nans} NaN values in '{time_col}' column, but {time_nats} NaT values in index.")
-
+    if not isinstance(df_time_index.index, pd.DatetimeIndex):
+        raise ValueError(f"DataFrame {sensor_name} index conversion to DatetimeIndex failed.")
     return df_time_index
 
 @transform_all_sensors
@@ -271,51 +281,61 @@ def group_duplicate_timeindex(df: pd.DataFrame , *, sensor_name:str | None = Non
 @transform_all_sensors
 def validate_basic_preprocessing(df: pd.DataFrame, *, sensor_name: str) -> pd.DataFrame:
     """
-    Führt eine Reihe von Validierungen auf dem DataFrame durch:
-    - Prüft, ob der Index ein DatetimeIndex ist.
-    - Prüft, ob der Index monoton aufsteigend ist.
-    - Prüft, ob der Index Duplikate enthält.
-    - Prüft, ob der Index NaT-Werte enthält.
-    - Prüft, ob der Index eine Zeitzone hat und ob diese UTC ist.
-    - Gibt Warnungen aus, wenn der DataFrame leer ist, sehr wenig Daten hat, oder keine Spalten hat.
-    - Setzt den Indexnamen auf 'time_utc', wenn er einen anderen Namen hat. + Info    
+    Führt eine Reihe von Validierungen auf dem DataFrame durch, prüft:
+    - ob der Index ein DatetimeIndex ist.
+    - ob der Index monoton aufsteigend ist.
+    - ob der Index Duplikate enthält.
+    - ob der Index NaT-Werte enthält.
+    - ob der Index eine Zeitzone hat und ob diese UTC ist.
+    - ob der DataFrame NaN-Zeilen enthält.
+    Gibt Warnungen aus, wenn:
+    - der DataFrame leer ist
+    - sehr wenig Daten hat
+    - oder keine Spalten hat
+    - der Index nicht 'time_utc' heißt
+    Information zur Frequenz des DataFrames, Warnung wenn die Frequenz nicht inferiert werden kann.
     Gibt den unveränderten DataFrame zurück, wenn alle Prüfungen bestanden sind.
     """
-    # harte Fehler
+    ## harte Fehler
+    # DatetimeIndex
     if not isinstance(df.index, pd.DatetimeIndex):
         raise ValueError(f"DataFrame '{sensor_name}' index must be a DatetimeIndex")
-
     if df.index.tz is None:
         raise ValueError(f"DataFrame '{sensor_name}' index must be timezone-aware")
-
     if str(df.index.tz) != "UTC":
         raise ValueError(f"DataFrame '{sensor_name}' index must be in UTC timezone")
-    
     if df.index.hasnans:
         nat_count = df.index.isna().sum()
         raise ValueError(f"DataFrame '{sensor_name}' index contains {nat_count} NaT values")
-
     if not df.index.is_monotonic_increasing:
         raise ValueError(f"DataFrame '{sensor_name}' index is not monotonically increasing")
-
     if df.index.has_duplicates:
         dup_count = df.index.duplicated().sum()
         raise ValueError(f"DataFrame '{sensor_name}' index has {dup_count} duplicate time entries")
-
-    # Index Namen setzen
-    if df.index.name != "time_utc":
-        old_name = df.index.name
-        df.index.name = "time_utc"
-        print(f"[Info] Index name was {old_name} until now! -> Set index name to 'time_utc'")
-
-    # Warnungen
+    # NaNs
+    if df.isna().any().any():
+        total_nan_rows = df.isna().any(axis=1).sum()
+        raise ValueError(f"DataFrame '{sensor_name}' contains {total_nan_rows} rows with NaN values")
+    ## Infos und Warnungen
+    #shape
     if df.empty:
         print(f"[Warning] Sensor '{sensor_name}' is empty.")
-    if df.shape[0] < 10:
-        print(f"[Info] Sensor '{sensor_name}' has only {df.shape[0]} rows, very little data.")
     if df.shape[1] == 0:
         print(f"[Warning] Sensor '{sensor_name}' has no columns.")
-
+    if df.shape[0] < 10:
+        print(f"[Info] Sensor '{sensor_name}' has only {df.shape[0]} rows, very little data.")
+    if df.select_dtypes(include="number").shape[1] == 0:
+        print(f"[Warning] Sensor '{sensor_name}' has no numerical columns.")
+    # Indexname
+    if df.index.name != "time_utc":
+        print(f"[Warning] Sensor '{sensor_name}' index name is '{df.index.name}', expected 'time_utc'.")
+    # Frequenz inferieren
+    ifq = pd.infer_freq(df.index)
+    if ifq is None or len(df.index) < 3:
+        print(f"[Warning] DataFrame '{sensor_name}' frequency could not be inferred!")
+    else:
+        print(f"[Info] DataFrame '{sensor_name}' frequency inferred as: {ifq}")
+    # alle Prüfungen bestanden
     print(f"[Info] DataFrame '{sensor_name}' passed all basic preprocessing validations.")
     return df   
 
@@ -339,6 +359,7 @@ def resample_imu_sensors(df: pd.DataFrame, *, cfg: dict[str, Any] | None = None,
     * cfg optional: Konfigurationsdictionary, um Parameter zu überschreiben
     """
     # Nur numerische Spalten weiterverarbeiten (restliche Spalten gehen verloren!)
+    # TODO: resample/interpolate für nicht numerische Spalten implementieren?
     df = df.select_dtypes(include="number")
     # Parameter aus config laden, falls vorhanden -> fallback auf Default-Parameter
     if cfg and "resample_imu" in cfg:
@@ -351,6 +372,7 @@ def resample_imu_sensors(df: pd.DataFrame, *, cfg: dict[str, Any] | None = None,
     step = pd.to_timedelta(1 / target_rate, unit='s')
     # Resampling
     out = df.resample(step, origin="epoch", label="left", closed="left").agg(agg_func)
+    # Interpolation
     if interp_method == "pad":
         out = out.interpolate(method="pad", limit=None, limit_direction="forward") # type: ignore[arg-type] #checker kennt 'pad' nicht
     else:
@@ -372,7 +394,8 @@ def resample_location_sensors(df: pd.DataFrame, *, cfg: dict[str, Any] | None = 
         - nearest: nächster Wert
     * cfg optional: Konfigurationsdictionary, um Parameter zu überschreiben
     """
-    # Nur numerische Spalten weiterverarbeiten (restliche Spalten gehen verloren!)
+    # Nur numerische Spalten weiterverarbeiten (restliche Spalten gehen verloren!
+    # TODO: resample/interpolate für nicht numerische Spalten implementieren?
     df = df.select_dtypes(include="number")
     # Parameter aus config laden, falls vorhanden -> fallback auf Default-Parameter
     if cfg and "resample_location" in cfg:
