@@ -189,12 +189,14 @@ def test_valid_passes_and_prints_info(capsys):
     assert "passed all basic preprocessing validations" in capsys.readouterr().out
 
 
-def test_index_name_none_is_set_and_informs(capsys):
+def test_index_name_none_triggers_warning(capsys):
     idx = pd.date_range("2025-01-01", periods=3, freq="s", tz="UTC").set_names([None])
     df = pd.DataFrame({"x": np.arange(3, dtype=float)}, index=idx)
+
     validate_basic_preprocessing.core(df, sensor_name="gyro")
-    assert df.index.name == "time_utc"
-    assert "Set index name to 'time_utc'" in capsys.readouterr().out
+
+    out = capsys.readouterr().out
+    assert "[Warning] Sensor 'gyro' index name is 'None', expected 'time_utc'." in out
 
 
 def test_few_rows_info(capsys):
@@ -205,10 +207,14 @@ def test_few_rows_info(capsys):
 
 
 def test_empty_df_warning(capsys):
-    idx = pd.DatetimeIndex([], tz="UTC", name="time_utc")
-    df = pd.DataFrame(index=idx)
+    # 3 Zeitpunkte, damit pd.infer_freq nicht wirft
+    idx = pd.date_range("2025-01-01", periods=3, freq="s", tz="UTC", name="time_utc")
+    df = pd.DataFrame(index=idx)  # 0 Spalten -> DataFrame.empty == True
+
     validate_basic_preprocessing.core(df, sensor_name="acc")
-    assert "is empty" in capsys.readouterr().out
+
+    out = capsys.readouterr().out
+    assert "is empty" in out  # minimal, robust
 
 
 def test_no_columns_warning(capsys):

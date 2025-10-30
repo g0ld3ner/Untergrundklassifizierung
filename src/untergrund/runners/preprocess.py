@@ -14,26 +14,26 @@ def run_preprocess(ctx: "Ctx") -> "Ctx":
     pipeline = CtxPipeline()
     pipeline.add(time_to_index, source="sensors")
     pipeline.tap(row_col_nan_dur_freq, source="sensors")
-    # pipeline.tap(head_tail, source="sensors")
-    # pipeline.tap(print_info, source="sensors")
-    # pipeline.tap(print_description, source="sensors")
+    pipeline.tap(head_tail, source="sensors")
+    pipeline.tap(print_info, source="sensors")
+    pipeline.tap(print_description, source="sensors")
     pipeline.tap(start_end, source="sensors")
     pipeline.add(nan_handling, source="sensors", fn_kwargs={"method":"drop", "warn_threshold":0.01})
     pipeline.add(drop_columns, source="sensors", fn_kwargs={"columns_to_drop":["seconds_elapsed"]})
     pipeline.add(handle_nat_in_index, source="sensors", fn_kwargs={"gap_len":2})
     pipeline.add(sort_sensors_by_time_index, source="sensors")
     pipeline.add(group_duplicate_timeindex, source="sensors")
+    pipeline.add(anti_aliasing_lowpass_filter.select(include=["Accelerometer", "Gyroscope"]), source="sensors", fn_kwargs={"cfg": ctx.config}) #GameOrientation?
     pipeline.add(resample_imu_sensors.select(exclude=["Location", "Gyroscope"]), source="sensors", fn_kwargs={"cfg": ctx.config})
-    pipeline.add(resample_imu_sensors.select(include=["Gyroscope"]), source="sensors", fn_kwargs={"cfg": ctx.config, "target_rate":100}) #später 50
+    pipeline.add(resample_imu_sensors.select(include=["Gyroscope"]), source="sensors", fn_kwargs={"cfg": ctx.config, "target_rate":100}) #später ggf. "target_rate":50
     pipeline.add(resample_location_sensors.select(include=["Location"]), source="sensors", fn_kwargs={"cfg": ctx.config})
     pipeline.add(trim_to_common_timeframe, source="sensors", fn_kwargs={"cfg": ctx.config})
     pipeline.add(validate_basic_preprocessing, source="sensors")
-    pipeline.add(high_pass_filter.select(include=["Accelerometer"]), source="sensors", fn_kwargs={"cfg": ctx.config})
-    pipeline.add(high_pass_filter.select(include=["Gyroscope"]), source="sensors", fn_kwargs={"cfg": ctx.config})
+    pipeline.add(high_pass_filter.select(include=["Accelerometer", "Gyroscope"]), source="sensors", fn_kwargs={"cfg": ctx.config}) #exclude Location wenn GameOrientation in der Config ist
     pipeline.tap(row_col_nan_dur_freq, source="sensors")
-    # pipeline.tap(head_tail, source="sensors")
-    # pipeline.tap(print_info, source="sensors")
-    # pipeline.tap(print_description, source="sensors")
+    pipeline.tap(head_tail, source="sensors")
+    pipeline.tap(print_info, source="sensors")
+    pipeline.tap(print_description, source="sensors")
     pipeline.tap(start_end, source="sensors")
     print("\nPipeline Repr:")
     print(pipeline)
@@ -339,9 +339,120 @@ def validate_basic_preprocessing(df: pd.DataFrame, *, sensor_name: str) -> pd.Da
     print(f"[Info] DataFrame '{sensor_name}' passed all basic preprocessing validations.")
     return df   
 
+### Anti-Aliasing Tiefpassfilter
+@transform_all_sensors
+def anti_aliasing_lowpass_filter(df: pd.DataFrame,
+                                *,
+                                sensor_name: str, 
+                                cfg: dict[str, Any] | None = None, 
+                                cutoff_freq: float | None = None, 
+                                target_rate: float = 100.0, # Ziel Samplingrate nach Resampling
+                                order: int = 6,
+                                safety_factor: float = 0.8,
+                                include_columns: list[str] | None = None
+                                ) -> pd.DataFrame:
+    """
+    Wendet einen Butterworth-Tiefpassfilter zur Anti-Aliasing-Filterung an.
+    """
+    # Parameter aus config laden, falls vorhanden -> fallback auf Default-Parameter
+    if cfg and sensor_name in cfg.get("anti_aliasing_lowpass", {}):
+        sensor_cfg = cfg["anti_aliasing_lowpass"][sensor_name]
+        target_rate = sensor_cfg.get("target_rate", target_rate)
+        order = sensor_cfg.get("order", order)
+        include_columns = sensor_cfg.get("include_columns", include_columns)
+    else:
+        print("[Info] No 'anti_aliasing_lowpass' config found, using default parameters.")
+
+    # target_rate gegen samplingrate aus resampling prüfen
+    if cfg and "resample_imu" in cfg:
+        resample_cfg = cfg["resample_imu"]
+        sample_rate_from_resampling = resample_cfg.get("target_rate", None)
+        if sample_rate_from_resampling is not None and not np.isclose(sample_rate_from_resampling, target_rate):
+            print(f"[Warning] DataFrame '{sensor_name}': target_rate from anti_aliasing_lowpass ({target_rate} Hz) does not match target_rate from resample_imu ({sample_rate_from_resampling} Hz). Use the same target_rate for both steps!")
+
+    # Cutoff-Frequenz bestimmen
+    if cutoff_freq is None:
+        cutoff_freq = safety_factor * (target_rate/2)
+    
+    # Alte/aktuelle Samplingrate inferieren
+    if len(df) < 2:
+        raise ValueError(f"{sensor_name}: not enough samples to estimate sampling rate.")
+    current_rate = 1 / (df.index.to_series().diff().dt.total_seconds().dropna().median())
+    ## alternative mit pd.infer_freq()
+    # inference = pd.infer_freq(cast(pd.DatetimeIndex, df.index))
+    # if inference is None:
+    #     raise ValueError(f"DataFrame '{sensor_name}' frequency could not be inferred, cannot apply lowpass filter. Miss some Preprocessing steps?")
+    # else:
+    #     try:
+    #         seconds = pd.Timedelta(inference).total_seconds()
+    #         current_rate = 1.0 / seconds if seconds > 0 else None
+    #         if current_rate is None:
+    #             raise ValueError(f"DataFrame '{sensor_name}': Frequency is Inf or zero, cannot apply lowpass filter.")
+    #     except ValueError:
+    #         inference = f"1{inference}"
+    #         try:
+    #             seconds = pd.Timedelta(inference).total_seconds()
+    #             current_rate = 1.0 / seconds if seconds > 0 else None
+    #             if current_rate is None:
+    #                 raise ValueError(f"DataFrame '{sensor_name}': Frequency is Inf or zero, cannot apply lowpass filter.")
+    #         except ValueError:
+    #             raise ValueError(f"DataFrame '{sensor_name}': Frequency '{inference}' could not be converted to seconds, cannot apply lowpass filter.")
+    
+    # Prüfen, ob AA-Filterung überhaupt erforderlich ist
+    if current_rate <= target_rate:
+        print(f"[Info] DataFrame '{sensor_name}': Current rate {current_rate:.2f} Hz <= target rate {target_rate:.2f} Hz, no lowpass filtering needed.")
+        return df
+
+    # Normalisierte Grenzfrequenz berechnen
+    wn = cutoff_freq / (current_rate/2)
+
+    # Voraussetzungen prüfen (ggf. parametrisieren?)
+    if not 0.02 <= wn <= 0.9:
+        raise ValueError(f"Normalized cutoff frequency wn={wn} out of valid range.")
+    pad_len = 3 * (order + 1)  # Padding-Länge für filtfilt
+    if df.shape[0] < pad_len:
+        raise ValueError(f"DataFrame {sensor_name} has too few samples ({df.shape[0]}) for filtering. Reduce order or resample to higher sample_rate. (len(df) < 3 * (order + 1))")
+    if df.isna().any().any():
+        raise ValueError(f"DataFrame {sensor_name} contains NaN values. Please handle them before applying the AA filter.")
+    
+    # Zu filternde Spalten auswählen
+    if include_columns is None:
+        df_to_filter = df.select_dtypes(include="number").astype("float64").copy() # alle numerischen Spalten
+    else:
+        if not all(col in df.columns for col in include_columns):
+            missing_cols = [col for col in include_columns if col not in df.columns]
+            raise ValueError(f"DataFrame {sensor_name} is missing columns for aa filter: {missing_cols}")
+        num_cols = df[include_columns].select_dtypes(include="number").columns
+        if len(num_cols) != len(include_columns):
+            raise ValueError(f"DataFrame {sensor_name}: include_columns contains non-numerical columns.")
+        df_to_filter = df[include_columns].astype("float64").copy() # nur angegebene Spalten
+    # prüfen, ob noch Spalten zum Filtern übrig sind
+    if df_to_filter.empty:
+            raise ValueError(f"DataFrame {sensor_name} has no more numerical columns to apply the AA filter.")
+
+    ###
+    # Filter erstellen und anwenden
+    sos = butter(order, wn, btype='lowpass', output='sos')
+    filtered = sosfiltfilt(sos, df_to_filter.to_numpy(), axis=0)
+    
+    # Plausibilitätscheck
+    if not np.isfinite(filtered).all():
+        print(f"[WARNING] {sensor_name}: Filtering produced non-finite values (NaN/Inf).")
+
+    aa_df = df.copy()
+    aa_df[df_to_filter.columns] = filtered
+    return aa_df
+
 ### Resample IMU Sensoren auf einheitliche Abtastrate
 @transform_all_sensors
-def resample_imu_sensors(df: pd.DataFrame, *, cfg: dict[str, Any] | None = None, target_rate: int = 100, agg_func: Literal["mean","median","first","last"] = "mean", interp_method: Literal["linear","time","nearest","pad"] = "time") -> pd.DataFrame:
+def resample_imu_sensors(df: pd.DataFrame, 
+                         *, 
+                         sensor_name: str, 
+                         cfg: dict[str, Any] | None = None, 
+                         target_rate: int = 100, 
+                         agg_func: Literal["mean","median","first","last"] = "mean", 
+                         interp_method: Literal["linear","time","nearest","pad"] = "time"
+                         ) -> pd.DataFrame:
     """
     Alle IMU-Sensoren auf eine einheitliche Abtastrate resamplen.
     -> Nicht-numerische Spalten werden entfernt
@@ -358,9 +469,26 @@ def resample_imu_sensors(df: pd.DataFrame, *, cfg: dict[str, Any] | None = None,
         - pad: vorheriger Wert (Vorwärtsfüllung)
     * cfg optional: Konfigurationsdictionary, um Parameter zu überschreiben
     """
-    # Nur numerische Spalten weiterverarbeiten (restliche Spalten gehen verloren!)
+    # TODO [Resampling-Refactor]:
+    # Aktuell werden IMU-Signale unabhängig von der tatsächlichen Aufnahmefrequenz
+    # durch .resample(...).agg(...)+.interpolate() auf ein gleichmäßiges Zeitraster gebracht.
+    # Das funktioniert, ist aber ein Mischfall aus "Jitter-Korrektur" und "echtem Downsampling".
+    # Langfristig sollte die Funktion zwei klar getrennte Pfade unterstützen:
+    #   (A) Jitter-Korrektur: Wenn Aufnahmefrequenz ≈ Zielrate (z. B. ±5 % Abweichung),
+    #       dann KEINE Aggregation und KEIN Anti-Aliasing — nur reindex() + interpolate("time"),
+    #       um leichte Unregelmäßigkeiten im Zeitraster zu glätten, ohne das Spektrum zu verändern.
+    #   (B) Downsampling: Wenn tatsächlich auf niedrigere Zielrate reduziert wird,
+    #       dann VORHER einen echten Anti-Aliasing-Tiefpass (z. B. Butterworth 4.–6. Ordnung)
+    #       anwenden, um Frequenzen oberhalb der neuen Nyquist-Grenze zu entfernen.
+    #       Danach decimieren/resample_poly statt mean-aggregation.
+    # Hintergrund:
+    #   Das aktuelle Vorgehen mittelt auch im Jitter-Fall leicht über Fenster → unnötige Glättung,
+    #   während beim echten Downsampling ohne vorgeschalteten Tiefpass Aliasing entstehen kann.
+    #   Diese Trennung erhöht sowohl Signalreinheit als auch Reproduzierbarkeit der Features.
+
     # TODO: resample/interpolate für nicht numerische Spalten implementieren?
-    df = df.select_dtypes(include="number")
+    # Nur numerische Spalten weiterverarbeiten (restliche Spalten gehen verloren!)
+    df = df.select_dtypes(include="number").copy()
     # Parameter aus config laden, falls vorhanden -> fallback auf Default-Parameter
     if cfg and "resample_imu" in cfg:
         target_rate = cfg["resample_imu"].get("target_rate", target_rate)
@@ -368,6 +496,13 @@ def resample_imu_sensors(df: pd.DataFrame, *, cfg: dict[str, Any] | None = None,
         interp_method = cfg["resample_imu"].get("interp_method", interp_method)
     else:
         print("[Info] No 'resample_imu' config found, using default parameters.")
+
+    # target_rate gegen target_rate aus anti_aliasing_lowpass prüfen
+    if cfg and sensor_name in cfg.get("anti_aliasing_lowpass", {}):
+        aa_cfg = cfg["anti_aliasing_lowpass"][sensor_name]
+        target_rate_from_aa = aa_cfg.get("target_rate", None)
+        if target_rate_from_aa is not None and not np.isclose(target_rate_from_aa, target_rate):
+            print(f"[Warning] DataFrame '{sensor_name}': target_rate from high_pass_filter ({target_rate} Hz) does not match target_rate from anti_aliasing_lowpass ({target_rate_from_aa} Hz). Use the same rate for both steps!")
     # von Hz in ms
     step = pd.to_timedelta(1 / target_rate, unit='s')
     # Resampling
@@ -533,6 +668,7 @@ def high_pass_filter(df: pd.DataFrame,
     - Grenzfrequenz in einem soliden Bereich (0.02 < wn < 0.8)
     """
     # TODO: Samplerate ermitteln statt als parameter übergeben! (index diff sollte konstant sein)
+    # ermittelte sample_rate dann mit target_rate aus resampling vergleichen (warnung wenn ungleich)
 
     # Parameter aus config laden, falls vorhanden -> fallback auf Default-Parameter
     if cfg and sensor_name in cfg.get("hp_filters", {}):
@@ -541,11 +677,11 @@ def high_pass_filter(df: pd.DataFrame,
         sample_rate = sensor_cfg.get("sample_rate", sample_rate)
         order = sensor_cfg.get("order", order)
         include_columns = sensor_cfg.get("include_columns", include_columns)
-        
+
     # Normalisierte Grenzfrequenz berechnen
     wn = cutoff_freq / (sample_rate/2)
 
-    # Voraussetzungen prüfen
+    # Voraussetzungen prüfen (ggf. parametrisieren?)
     if not 0.02 <= wn <= 0.8:
         raise ValueError(f"Normalized cutoff frequency wn={wn} out of valid range.")
     pad_len = 3 * (order + 1)  # Padding-Länge für filtfilt

@@ -1,6 +1,18 @@
 {
   "input_path": "data/testdaten.json",
   "sensor_list": ["Accelerometer","Gyroscope","GameOrientation","Location"],
+  "anti_aliasing_lowpass": {
+    "Accelerometer": {
+      "target_rate": 100,
+      "order": 6,
+      "include_columns": ["x", "y", "z"]
+    },
+    "Gyroscope": {
+      "target_rate": 100,
+      "order": 6,
+      "include_columns": ["x", "y", "z"]
+    }
+  },
   "resample_imu": {
     "target_rate": 100,
     "agg_func": "mean",
@@ -13,7 +25,7 @@
   },
   "trim_to_common_timeframe": {
     "align_to_sensor": null,
-    "warn_if_cur_seconds": 10
+    "warn_if_cut_seconds": 10
   },
   "hp_filters": {
     "Accelerometer": {
