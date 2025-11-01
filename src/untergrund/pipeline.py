@@ -115,11 +115,11 @@ class CtxPipeline:
         * Multi-Source → Single-Dest (Combine)
       KEIN Fan-Out, KEIN direkter Ctx-Step.
     - Updates erfolgen immutable via dataclasses.replace(ctx, ...).
-    - Tap/Inspect ist read-only (kein Ctx-Schreiben).
+    - Tap/Inspect ist read-only (Ctx bleibt unverändert).
 
     API:
-      add(fn, *, source: str | Sequence[str], dest: Optional[str] = None, name: Optional[str] = None,
-          fn_kwargs: Optional[dict[str, Any]] = None)
+      add(fn, *, source: str | Sequence[str], dest: Optional[str] = None, 
+          name: Optional[str] = None, fn_kwargs: Optional[dict[str, Any]] = None)
         - source=str:    fn bekommt genau dieses Teilobjekt.
                          dest=None ⇒ In-Place (dest=source).
         - source=list:   fn(*values) in Reihenfolge von `source`.
@@ -128,10 +128,14 @@ class CtxPipeline:
         - fn_kwargs:     Nur Keyword-Parameter; werden früh validiert/gebunden.
 
       tap(inspector, *, projector=None, deepcopy=True, name=None)
-        - inspector:  Callable, das auf der (optionalen) Projektion arbeitet.
-        - projector:  Funktion, die aus Ctx ein schlankes Objekt macht (read-only).
-        - deepcopy:   True ⇒ Sicherheitskopie der Projektion vorm Inspektor.
-        - Ergebnisse werden in self.taps[name] (list) gesammelt.
+        - Inspector erhält IMMER ein dict[str, Any]:
+            * source=str, value ist dict → direkt durchreichen (flach).
+            * source=str, value ist single → {source: value}.
+            * source=list → für jede Quelle:
+                - dict-Quellen werden in das Ergebnis gemerged,
+                - Single-Quellen unter ihrem Quellnamen hinzugefügt.
+        - deepcopy=True: es wird eine tiefe Kopie des gesamten dicts erstellt.
+        - Rückgaben des Inspectors werden ignoriert; bei Rückgabe != None erfolgt eine Warnung.
     """
 
     def __init__(self):
@@ -208,9 +212,10 @@ class CtxPipeline:
     ) -> "CtxPipeline":
         """
         Inspektions-Step (read-only):
-        - source: Pflicht. Einzelne 'Schublade' (str) oder mehrere (Sequence[str]).
-        - inspector: Funktion, die die extrahierten Daten betrachtet/verarbeitet
-                     (z. B. Log/Datei schreibt) und `None` zurückgibt.
+        - source: Pflicht. Einzelner string oder mehrere Sequence[str].
+        - inspector: Funktion, welche die extrahierten Daten inspiziert.
+            * Dem Inspektor wird IMMER ein dict[str, Any] übergeben.
+            * Rückgabewerte des Inspektors werden ignoriert; bei Rückgabe != None erfolgt eine Warnung.
         - deepcopy: True (Standard) => schützt sicher vor versehentlichen Mutationen.
         - name: optionaler Anzeigename (nur für __repr__/Debug).
 
@@ -223,18 +228,46 @@ class CtxPipeline:
             print(f"WARNUNG: tap({step_name}, deepcopy=False) – Mutationen am Ctx sind möglich!")
 
         def _project(ctx: Any) -> Any:
+            # Einheitlicher Vertrag für Inspektoren: immer dict[str, Any]
             if isinstance(source, str):
-                data = getattr(ctx, source)
-                return copy.deepcopy(data) if deepcopy else data
-            # mehrere Quellen -> gleiches Tupel, in Reihenfolge der Namen
-            items = tuple(getattr(ctx, s) for s in source)
+                value = getattr(ctx, source)
+                if isinstance(value, dict):
+                    items = value
+                else:
+                    items = {source: value}
+            else:
+                # mehrere Quellen → benanntes dict in Quellreihenfolge
+                items: dict[str, Any] = {}
+                for s in source:
+                    v = getattr(ctx, s)
+                    if isinstance(v, dict):
+                        # Merge: Key wird überschrieben falls schon verhanden! -> Warnung
+                        overlap = items.keys() & v.keys()
+                        if overlap:
+                            print(f"[Warnung] Doppelte Keys beim Merge aus Quelle '{s}': {sorted(overlap)}")
+                        items.update(v)
+                    else:
+                        items[s] = v
             return copy.deepcopy(items) if deepcopy else items
+
+
+            #     items = {source: getattr(ctx, source)}
+            # else:
+            #     # mehrere Quellen → benanntes dict in Quellreihenfolge
+            #     items = {s: getattr(ctx, s) for s in source}
+            # return copy.deepcopy(items) if deepcopy else items
+            ##OLD
+            #     data = getattr(ctx, source)
+            #     return copy.deepcopy(data) if deepcopy else data
+            # # mehrere Quellen -> gleiches Tupel, in Reihenfolge der Namen
+            # items = tuple(getattr(ctx, s) for s in source)
+            # return copy.deepcopy(items) if deepcopy else items
 
         def _tap(ctx: Any) -> Any:
             view = _project(ctx)
-            result = inspector(view)   # Inspektor hat keine Rückgabe (None erwartet)
+            result = inspector(view)   # Inspektor bekommt IMMER dict[str, Any]
             if result is not None:
-                print(f"Warnung: Tap-Inspektor {step_name} hat etwas zurückgegeben! Return wird aber ignoriert ;)")
+                print(f"[Warnung] Tap-Inspektor {step_name} hat etwas zurückgegeben! Return wird aber ignoriert ;)")
             return ctx        # Ctx bleibt unverändert
 
         _tap.__name__ = f"tap({step_name})"
