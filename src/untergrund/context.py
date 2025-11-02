@@ -21,8 +21,12 @@ class Ctx:
     sensors: dict[str, pd.DataFrame] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)
 
-    features: Optional[pd.DataFrame] = None
-    preds: Optional[pd.Series] = None
+    ##OLD:
+    # features: Optional[pd.DataFrame] = None
+    # preds: Optional[pd.Series] = None
+
+    features: dict[str, pd.DataFrame] = field(default_factory=dict)
+    preds: dict[str, pd.Series] = field(default_factory=dict)
 
     config: dict[str, Any] = field(default_factory=dict)
     artifacts: dict[str, Any] = field(default_factory=dict)

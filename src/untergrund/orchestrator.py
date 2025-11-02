@@ -5,7 +5,7 @@ from .runners.select import run_select
 from .runners.preprocess import run_preprocess
 from .runners.window import run_window
 from .runners.features import run_features
-from .runners.classify import run_classify
+from .runners.model import run_model
 from .runners.export import run_export
 
 
@@ -15,7 +15,7 @@ STAGE_FUNCS = {
     Stage.PREPROCESS: run_preprocess,
     Stage.WINDOW: run_window,
     Stage.FEATURES: run_features,
-    Stage.CLASSIFY: run_classify,
+    Stage.MODEL: run_model,
     Stage.EXPORT: run_export,
 }
 

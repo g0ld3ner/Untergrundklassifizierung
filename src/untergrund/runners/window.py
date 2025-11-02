@@ -6,7 +6,7 @@ import pandas as pd
 
 def run_window(ctx: "Ctx") -> "Ctx":
     pipeline = CtxPipeline()
-    pipeline.add(windowing,source="sensors", dest="features", fn_kwargs={"cfg": ctx.config})
+    pipeline.add(windowing,source="sensors", dest="features", fn_kwargs={"cfg": ctx.config, "feature_set": "cluster"})
     pipeline.tap(row_col_nan_dur_freq, source="features")
     pipeline.tap(head_tail, source="features")
     pipeline.tap(print_info, source="features")
@@ -14,7 +14,7 @@ def run_window(ctx: "Ctx") -> "Ctx":
     pipeline.tap(start_end, source="features")
     return pipeline(ctx)
 
-def windowing(sensors: dict[str, pd.DataFrame], *, cfg: dict[str, Any], duration_s: int = 4, hop_s: int = 2) -> pd.DataFrame:
+def windowing(sensors: dict[str, pd.DataFrame], *, cfg: dict[str, Any], duration_s: int = 4, hop_s: int = 2, feature_set: str = "default") -> dict[str, pd.DataFrame]:
     """
     Erzeugt Fenster-DataFrame basierend auf t-min/t-max aller Sensoren.
     - Index: fortlaufender Integer (window_id)
@@ -79,4 +79,4 @@ def windowing(sensors: dict[str, pd.DataFrame], *, cfg: dict[str, Any], duration
     window_df = window_df[window_df["end_utc"] <= t_max]
     print(f"[Info] Created {len(window_df)} windows from {t_min} to {t_max} with duration {duration_s}s and hop {hop_s}s.")
     # TODO: Struktur des window_df gegenüber der Erwartung prüfen
-    return window_df
+    return {feature_set: window_df}

@@ -18,5 +18,13 @@ def main() -> Ctx:
 if __name__ == "__main__":
     test = main()
     print("\n+++ Test run complete +++\n")
+
+    # Inhalt aller Ctx Attribute anzeigen
+    for attr in test.__dataclass_fields__:
+        value = getattr(test, attr)
+        if isinstance(value, dict):
+            print(f"{attr}: dict with (key,type(value)): {[(k, type(v)) for k, v in value.items()]}")
+        else:
+            print(f"{attr}: single Object of type {type(value)}")
    
         
