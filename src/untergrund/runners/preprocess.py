@@ -35,7 +35,7 @@ def run_preprocess(ctx: "Ctx") -> "Ctx":
     pipeline.tap(print_info, source="sensors")
     pipeline.tap(print_description, source="sensors")
     pipeline.tap(start_end, source="sensors")
-    print("\nPipeline Repr:")
+    print("\nPreprocessing-Pipeline Repr:")
     print(pipeline)
     return pipeline(ctx)
 

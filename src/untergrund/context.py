@@ -5,13 +5,13 @@ import pandas as pd
 @dataclass(frozen=True, slots=True)
 class Ctx:
     """
-    Context-Objekt für die MVP-Pipeline (eine Fahrt, lokale Klassifikation).
+    Context-Objekt für die Pipeline.
 
     Enthält nur die nötigsten Daten:
       - sensors:   Zeitreihen pro Sensor (kein "Metadata")
       - meta:      globale Fahrtinfos (aus "Metadata"-Sensor extrahiert)
       - features:  Fenster-Features (nur Input-Merkmale + Schlüsselspalten)
-      - preds:     Vorhersagen/Labels je Fenster (gefüllt in LOCAL_CLASSIFY)
+      - preds:     Vorhersagen/Labels je Fenster
       - config:    Lauf-Parameter (z. B. Fenstergröße, Resample-Takt, Seeds)
       - artifacts: Provenienz (run_id, Pfade, Hashes), KEINE großen Objekte
 
