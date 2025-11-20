@@ -35,6 +35,8 @@ def run_features(ctx: "Ctx") -> "Ctx":
     
     # Features hinzufügen:
     add_f(acc_rms)
+    add_f(acc_std)
+    add_f(acc_p2p)
 
     pipeline.tap(row_col_nan_dur_freq, source="features")
     pipeline.tap(head_tail, source="features")
@@ -48,7 +50,11 @@ def run_features(ctx: "Ctx") -> "Ctx":
     return pipeline(ctx)
 
 def acc_rms(sensors: dict[str, pd.DataFrame], features: dict[str, pd.DataFrame], *, window_key: str, sensor_name: str = "Accelerometer", cols: list[str] = ["x", "y", "z"]) -> dict[str, pd.DataFrame]:
-    """Calculate the RMS of acceleration values in the given window."""
+    """
+    Gesamte Amplitude über alle 3 Achsen in einem Fenster berechnen.
+    - Ermitteln die kumulierte Energie der Beschleuningungswerte über alle Achsen.
+    WICHTIG: Geschwindigkeitsabhängig (v**2)
+    """
     if sensor_name not in sensors:
         raise ValueError(f"Sensor '{sensor_name}' not found in sensors dict.")
     
@@ -77,3 +83,81 @@ def acc_rms(sensors: dict[str, pd.DataFrame], features: dict[str, pd.DataFrame],
 
     fdf["acc_rms"] = rms_values
     return {**features, window_key: fdf}
+
+def acc_std(sensors: dict[str, pd.DataFrame], features: dict[str, pd.DataFrame], *, window_key: str, sensor_name: str = "Accelerometer", cols: list[str] = ["x", "y", "z"]) -> dict[str, pd.DataFrame]:
+    """
+    Standardabweichung über alle Achsen in einem Fenster berechnen.
+    WICHTIG: Geschwindigkeitsabhängig (v**2)
+    """
+    if sensor_name not in sensors:
+        raise ValueError(f"Sensor '{sensor_name}' not found in sensors dict.")
+
+    fdf = features[window_key].copy()
+    acc = sensors[sensor_name]
+
+    missing_cols = [c for c in cols if c not in acc.columns]
+    if missing_cols:
+        raise ValueError(f"[acc_std] Im Sensor '{sensor_name}' fehlen Spalten: {missing_cols}")
+
+    std_values = []
+    nan_count = 0
+    for i, row in fdf.iterrows(): #ggf. später ohne das "kostbare" iterrows() implementieren
+        start_utc = row["start_utc"]
+        end_utc = row["end_utc"]
+        window_data = acc.loc[(acc.index >= start_utc) & (acc.index < end_utc), cols]
+        if len(window_data) == 0:
+            std_values.append(np.nan)
+            nan_count += 1
+            continue
+
+        std = np.std(window_data.values.flatten())
+        std_values.append(std)
+
+    if nan_count > 0:
+        print(f"[Warning] acc_std: {nan_count} windows had no data and resulted in NaN STD values.")
+
+    fdf["acc_std"] = std_values
+    return {**features, window_key: fdf}
+
+
+def acc_p2p(sensors: dict[str, pd.DataFrame], features: dict[str, pd.DataFrame], *, window_key: str, sensor_name: str = "Accelerometer", cols: list[str] = ["x", "y", "z"]) -> dict[str, pd.DataFrame]:
+    """
+    Größten Peak im Fenster berechnen (Maximum - Minimum).
+    - Gut für Anomalie erkennung und Debugging, weniger für das Clustering
+    WICHTIG: Geschwindigkeitsabhängig (v**2)
+    """
+    ### TODO Was ist bei diagonalem Vektor?
+    if sensor_name not in sensors:
+        raise ValueError(f"Sensor '{sensor_name}' not found in sensors dict.")
+
+    fdf = features[window_key].copy()
+    acc = sensors[sensor_name]
+
+    missing_cols = [c for c in cols if c not in acc.columns]
+    if missing_cols:
+        raise ValueError(f"[acc_p2p] Im Sensor '{sensor_name}' fehlen Spalten: {missing_cols}")
+
+    p2p_values = []
+    nan_count = 0
+    for i, row in fdf.iterrows(): #ggf. später ohne das "kostbare" iterrows() implementieren
+        start_utc = row["start_utc"]
+        end_utc = row["end_utc"]
+        window_data = acc.loc[(acc.index >= start_utc) & (acc.index < end_utc), cols]
+        if len(window_data) == 0:
+            p2p_values.append(np.nan)
+            nan_count += 1
+            continue
+
+        # Peak-to-Peak: Maximum - Minimum über alle Achsen
+        max_val = window_data.max().max()  # Größter Wert in allen Spalten
+        min_val = window_data.min().min()  # Kleinster Wert in allen Spalten
+        p2p = max_val - min_val
+
+        p2p_values.append(p2p)
+
+    if nan_count > 0:
+        print(f"[Warning] acc_p2p: {nan_count} windows had no data and resulted in NaN P2P values.")
+
+    fdf["acc_p2p"] = p2p_values
+    return {**features, window_key: fdf}
+

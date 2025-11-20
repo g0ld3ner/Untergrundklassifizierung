@@ -10,6 +10,13 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "g0ld3ner" }]
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "pytest",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

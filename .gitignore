@@ -11,3 +11,8 @@ local/
 TESTS_CtxPipeline_Routing.md
 
 OLD_*
+
+# IMPORTANT: .claude/ should be tracked in Git!
+# It contains project context for Claude instances
+# Do NOT add .claude/ to .gitignore
+.claude/

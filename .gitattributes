@@ -1,0 +1,8 @@
+# Default: Alle Text-Dateien mit CRLF im Arbeitsverzeichnis, LF im Repository
+* text=auto eol=crlf
+
+# Shell-Scripts brauchen LF, sonst funktionieren sie nicht in WSL/Linux
+*.sh text eol=lf
+
+# Python-Dateien: CRLF + bessere Diff-Anzeige mit Funktions-/Klassennamen
+*.py text eol=crlf diff=python
