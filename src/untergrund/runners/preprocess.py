@@ -377,7 +377,8 @@ def anti_aliasing_lowpass_filter(df: pd.DataFrame,
     # Alte/aktuelle Samplingrate inferieren
     if len(df) < 2:
         raise ValueError(f"{sensor_name}: not enough samples to estimate sampling rate.")
-    current_rate = 1 / (df.index.to_series().diff().dt.total_seconds().dropna().median())
+    idx = cast(pd.DatetimeIndex, df.index) # sonst ist der Typechecker wieder unglücklich...
+    current_rate = 1 / (idx.to_series().diff().dt.total_seconds().dropna().median())
     ## alternative mit pd.infer_freq()
     # inference = pd.infer_freq(cast(pd.DatetimeIndex, df.index))
     # if inference is None:

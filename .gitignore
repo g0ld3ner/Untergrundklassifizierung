@@ -16,3 +16,4 @@ OLD_*
 # It contains project context for Claude instances
 # Do NOT add .claude/ to .gitignore
 .claude/
+AGENTS.md

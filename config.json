@@ -1,6 +1,6 @@
 {
   "input_path": "data/testdaten.json",
-  "sensor_list": ["Accelerometer","Gyroscope","GameOrientation","Location"],
+  "sensor_list": ["Accelerometer","Gyroscope","Location"], 
   "anti_aliasing_lowpass": {
     "Accelerometer": {
       "target_rate": 100,
@@ -40,6 +40,11 @@
       "order": 4,
       "include_columns": ["x", "y", "z"]
     }
+  },
+  "velocity_normalization": {
+    "velocity_epsilon": 0.1,
+    "v_confidence_threshold": 0.5,
+    "confidence_strategy": "hard_threshold"
   },
   "window_duration_s": 4,
   "window_hop_s": 2,
